@@ -4,7 +4,7 @@
 
 WOUF shows how to work with AI agents the way a small company works with a team: one lead you talk to, who hands tasks to a worker, has a reviewer check the result, asks a decider for the hard calls, and tells you what happened. The bots run in their own sandboxes on your computer, a VM or a server, so they cannot touch your files or each other.
 
-It is not a product or a platform. It is a folder of plain instructions plus small standard-library Python helpers, which you copy into a project and use with Claude Code, Codex CLI, Gemini CLI, Antigravity, Grok Build or any agent CLI that reads `AGENTS.md`.
+It is not a product or a platform. It is a folder of plain instructions plus small standard-library Python helpers, which you copy into a project and use with Claude Code, Codex CLI, Antigravity CLI, Grok Build or any agent CLI that reads `AGENTS.md`.
 
 ## Status
 
@@ -19,7 +19,7 @@ The first public release, **v0.1.0**, is being prepared. The pack, its helpers a
 
 ## It builds itself
 
-WOUF is developed by its own agent team: a lead, workers on Claude and Codex, and reviewers, each change reviewed before it lands.
+WOUF is developed by its own agent team: a lead, workers on Gemini, Claude and Codex, and reviewers, each change reviewed before it lands.
 
 ## About
 
