@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- WOUF Icon – refined, cleaner geometry, matched palette, no drop shadow -->
+  <defs>
+    <linearGradient id="main" x1="256" y1="40" x2="256" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2AF0FF" />
+      <stop offset="40%" stop-color="#0090FF" />
+      <stop offset="100%" stop-color="#1A30FF" />
+    </linearGradient>
+    <linearGradient id="shadow" x1="256" y1="70" x2="256" y2="450" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0060E0" />
+      <stop offset="100%" stop-color="#081060" />
+    </linearGradient>
+    <linearGradient id="bridge" x1="256" y1="120" x2="256" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5CFFFF" />
+      <stop offset="55%" stop-color="#00A0FF" />
+      <stop offset="100%" stop-color="#0055DD" />
+    </linearGradient>
+  </defs>
+
+  <!-- Base shadow form (inner ears + jaw) -->
+  <path d="M 100 50 L 208 150 L 256 138 L 304 150 L 412 50 L 444 220 L 350 442 C 338 464 308 464 294 442 L 256 382 L 218 442 C 204 464 174 464 162 442 L 68 220 Z" fill="url(#shadow)" />
+
+  <!-- Left cheek / wing -->
+  <path d="M 100 50 C 138 82 176 128 196 166 L 138 232 L 206 392 L 256 312 L 256 382 L 216 446 C 200 468 170 464 156 438 L 58 226 C 48 204 50 178 58 154 Z" fill="url(#main)" />
+
+  <!-- Right cheek / wing -->
+  <path d="M 412 50 C 374 82 336 128 316 166 L 374 232 L 306 392 L 256 312 L 256 382 L 296 446 C 312 468 342 464 356 438 L 454 226 C 464 204 462 178 454 154 Z" fill="url(#main)" />
+
+  <!-- Central forehead + snout -->
+  <path d="M 256 132 L 330 192 L 290 342 C 280 374 232 374 222 342 L 182 192 Z" fill="url(#bridge)" />
+
+  <!-- Eyes -->
+  <polygon points="158,212 214,232 200,254 148,232" fill="#5CFFFF" />
+  <polygon points="354,212 298,232 312,254 364,232" fill="#5CFFFF" />
+
+  <!-- Nose -->
+  <polygon points="256,312 280,336 256,368 232,336" fill="#061059" />
+</svg>

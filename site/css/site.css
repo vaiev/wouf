@@ -1,0 +1,283 @@
+/* wouf.dev — the site's own layer over VAIEV UI v8. materials.css, components.css, patterns.css, vaiev.js
+   and vt.js stay as v8 ships them; everything here only places, spaces or extends their parts, with v8
+   tokens and springs. Dark only. No caps, no text under 14px. */
+
+/* ── page frame: one 1200px container, 16px gutters on phones and 24px from 860px ── */
+.page.site { padding-inline: max(var(--space-4), env(safe-area-inset-left, 0px)); padding-bottom: 0; }
+@media (min-width: 860px) { .page.site { padding-inline: var(--space-6); } }
+/* from 860px the bar sits at the top: 100px stay free above the content, so it never covers it */
+.site { padding-top: 100px; }
+html { scroll-padding-top: 104px; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+:focus-visible { outline: 2px solid var(--indicator); outline-offset: 3px; }
+.lead { font-size: var(--fs-body-l); line-height: 1.6; max-width: 60ch; }
+.kicker { font: 500 var(--fs-label-l) / 1.3 var(--font-ui); }
+
+/* wouf.dev's pages do not slide: the page cross-fades and only the site bar morphs */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-brand="wouf"]::view-transition-old(root) { animation-name: vt-fade-out; }
+  html[data-brand="wouf"]::view-transition-new(root) { animation-name: vt-fade-in; }
+}
+@keyframes vt-fade-out { to { opacity: 0; } }
+@keyframes vt-fade-in { from { opacity: 0; } }
+
+/* ── the site bar. From 860px: v8's collapsible SiteBar at the top, as wide as the footer's content (the
+   wordmark starts where the footer starts, the GitHub mark ends where it ends; the glass reaches 12px beyond
+   on both sides), clear at the top of a page, 560px while reading down (v8), wide again going up and near the
+   end. The wordmark is the home link and always shows; there is no icon. ── */
+.site-bar { --bar-wide: min(100% - 2 * var(--space-3), 1200px - 2 * var(--space-6) + 2 * var(--space-3));
+  view-transition-name: site-bar; padding-inline: var(--space-3);
+  transition: width var(--dur-spatial) var(--spring-spatial), background-color var(--dur-spatial) var(--spring-spatial),
+              border-radius var(--dur-spatial) var(--spring-spatial), box-shadow var(--dur-spatial) var(--spring-spatial); }
+.site-bar .lockup { flex: none; }
+.site-bar .lockup .logo { width: 92px; height: 22px; }
+.site-bar .gh { margin-left: auto; flex: none; }
+.site-links + .gh { margin-left: 0; }
+.site-links a[aria-current="page"] { color: var(--on-surface); background: color-mix(in oklch, var(--on-surface) 8%, transparent); }
+.site-links a[hidden] { display: none; }
+@media (min-width: 860px) {
+  .site-bar { width: var(--bar-wide); }
+  .site-links .home-link { display: none; }
+  /* top of the page: the bar is part of the canvas (no pill, no border, no blur) */
+  html[data-site-state="top"] .site-bar { background-color: transparent; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  /* near the end of a page every link comes back, whatever the direction; so does "up", which also holds while
+     focus is in the bar (js/site.js), even when v8's scroll module reads the page as going down */
+  html[data-site-state="up"] .site-bar[data-collapsible],
+  html[data-site-state="bottom"] .site-bar[data-collapsible] { width: var(--bar-wide); }
+}
+/* phones: a bar at the bottom, in reach of the thumb (v8 puts it there), always visible and never folding:
+   Home, Examples, Docs; no wordmark, no GitHub mark, no menu. The page ends above it. */
+@media (max-width: 859px) {
+  /* .page.site, not .site: the frame rule above sets padding-bottom: 0 with this specificity */
+  .page.site { padding-top: var(--space-6); padding-bottom: calc(60px + 2 * var(--size-float-gap) + env(safe-area-inset-bottom, 0px)); }
+  html { scroll-padding-top: var(--space-4); scroll-padding-bottom: calc(60px + 2 * var(--size-float-gap) + env(safe-area-inset-bottom, 0px)); }
+  .site-bar .lockup, .site-bar .gh { display: none; }
+  html .site-bar[data-collapsible], html[data-scroll] .site-bar[data-collapsible] { width: min(100% - 2 * var(--size-float-gap), 480px); padding: var(--space-2); }
+  .site-links { display: flex; flex: 1; gap: var(--space-1); margin: 0; }
+  .site-links a { flex: 1; justify-content: center; min-height: var(--size-target); }
+}
+
+/* ── hero (home only): the whole first screen, its own sky that fades into the page's field as it scrolls
+   away; the title, a cue on and the demo ── */
+.sky { position: absolute; top: 0; left: 0; right: 0; height: 130svh; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(60% 45% at 72% 38%, color-mix(in oklch, var(--primary) 30%, transparent), transparent 72%),
+    radial-gradient(50% 40% at 12% 18%, color-mix(in oklch, var(--field-2) 70%, transparent), transparent 70%),
+    linear-gradient(180deg, color-mix(in oklch, var(--primary) 16%, var(--surface)) 0%, color-mix(in oklch, var(--primary) 8%, var(--surface)) 55%, transparent 100%); }
+.hero { min-height: 0; grid-template-columns: minmax(0, 1fr); }
+.home-hero { min-height: calc(100svh - 100px); align-content: center; gap: var(--space-12); padding-block: var(--space-12) var(--space-16); }
+@media (max-width: 859px) { .home-hero { min-height: calc(100svh - 60px - 2 * var(--size-float-gap) - var(--space-6)); gap: var(--space-10); padding-block: var(--space-10) var(--space-12); } }
+/* from 860px the title column is wide enough for the title to read in three or four lines; from 1100px, beside
+   the demo, it takes the larger share and the title a step smaller */
+@media (min-width: 1100px) { .home-hero { grid-template-columns: 6fr 5fr; gap: var(--space-16); } }
+.home-hero .hero-copy { gap: var(--space-8); max-width: 34ch; }
+@media (min-width: 860px) { .home-hero .hero-copy { max-width: 36rem; } }
+.home-hero h1 { font-size: var(--fs-display-m); line-height: 1.08; letter-spacing: -0.02em; text-wrap: balance; }
+@media (min-width: 1100px) { .home-hero h1 { font-size: clamp(44px, 2.5vw + 18px, 56px); } }
+.hero-mark { display: inline-flex; align-items: center; gap: var(--space-4); height: auto; color: var(--on-surface-variant); font: 500 var(--fs-title-m) / 1.3 var(--font-ui); }
+/* the cue on to how it works, beside the demo; on one column the demo itself follows the title */
+.hero-cue { display: none; align-items: center; gap: var(--space-2); min-height: var(--size-target); color: var(--on-surface-variant); font: 500 var(--fs-body-l) / 1.3 var(--font-ui); text-decoration: none; }
+.hero-cue:hover { color: var(--on-surface); }
+.hero-cue .icon { color: var(--primary); }
+@media (min-width: 1100px) { .hero-cue { display: inline-flex; } }
+@media (prefers-reduced-motion: no-preference) {
+  .hero-cue .icon { animation: cue-nudge 2.4s var(--spring-effects) infinite; }
+}
+@keyframes cue-nudge { 0%, 60%, 100% { transform: none; } 30% { transform: translateY(4px); } }
+/* the emblem: a glass squircle that slowly breathes between two shapes, part of the title's lockup */
+.emblem { display: grid; place-items: center; width: 64px; height: 64px; flex: none; border-radius: var(--shape-xl); }
+.emblem img { width: 40px; height: 40px; }
+@media (prefers-reduced-motion: no-preference) {
+  .emblem { animation: emblem-morph 9s var(--spring-spatial-slow) infinite alternate; }
+}
+@keyframes emblem-morph { 0%, 30% { border-radius: var(--shape-xl); } 70%, 100% { border-radius: 40% 40% 46% 46% / 46% 46% 40% 40%; } }
+
+/* ── the demo (js/site.js, any [data-demo]): a conversation between chat and command line. Every dialog is
+   in the page from the start and takes its place; the script only marks lines data-shown and the composer's
+   text. Without the script, or with reduced motion, the finished dialog shows. ── */
+.demo { display: grid; gap: var(--space-5); margin: 0; padding: var(--space-5); border-radius: var(--shape-xxl);
+  background: color-mix(in oklch, var(--surface-container) 82%, transparent); -webkit-backdrop-filter: blur(var(--lens-blur)) saturate(var(--lens-sat)); backdrop-filter: blur(var(--lens-blur)) saturate(var(--lens-sat));
+  border: 1px solid var(--outline-variant); min-width: 0; }
+@media (min-width: 860px) { .demo { padding: var(--space-8); gap: var(--space-6); } }
+.demo-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.demo-chips, .demo-controls { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.demo-chips .chip { height: 40px; padding: 0 var(--space-4); }
+.demo-btn { min-height: 40px; padding: 0 var(--space-4); border: 1px solid var(--outline-variant); border-radius: var(--shape-full); background: transparent; color: var(--on-surface); font: 500 var(--fs-label-l) / 1 var(--font-ui); cursor: pointer;
+  transition: background-color var(--dur-effects) var(--spring-effects); }
+.demo-btn:hover { background: color-mix(in oklch, var(--on-surface) 8%, transparent); }
+.demo:not([data-ready]) .demo-bar, .demo[data-still] .demo-controls { display: none; }
+.demo-panes { display: grid; }
+.demo-dialog { grid-area: 1 / 1; display: grid; align-content: start; gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.demo-dialog:not([data-active]) { visibility: hidden; }
+.msg { display: grid; gap: var(--space-1); max-width: 88%; justify-self: start; }
+.msg p { padding: var(--space-3) var(--space-4); border-radius: var(--shape-l-inc) var(--shape-l-inc) var(--shape-l-inc) var(--shape-xs); background: var(--surface-container-high); font-size: var(--fs-body-l); line-height: 1.5; }
+.msg .who { color: var(--on-surface-variant); font: 500 var(--fs-label-l) / 1.3 var(--font-ui); }
+.msg-you { justify-self: end; justify-items: end; }
+.msg-you p { border-radius: var(--shape-l-inc) var(--shape-l-inc) var(--shape-xs) var(--shape-l-inc); background: color-mix(in oklch, var(--primary) 26%, var(--surface-container)); }
+.msg-ask p { box-shadow: inset 3px 0 0 var(--primary); }
+.msg-done p { background: color-mix(in oklch, var(--ok) 16%, var(--surface-container)); }
+.msg-done .who { color: var(--ok); }
+.demo-compose { display: flex; align-items: center; gap: var(--space-3); min-height: 56px; padding: var(--space-2) var(--space-2) var(--space-2) var(--space-5); border-radius: var(--shape-full); background: var(--surface-container-low); border: 1px solid var(--outline-variant); font: 500 var(--fs-body-m) / 1.4 var(--font-plex-mono); }
+.demo-prompt { color: var(--primary); }
+.demo-typed { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.demo-typed:empty::before { content: "Tell WOUF what you need"; color: var(--on-surface-variant); }
+.demo-send { display: grid; place-items: center; width: 40px; height: 40px; flex: none; border-radius: var(--shape-full); background: var(--primary); color: var(--on-primary); }
+.demo-note { color: var(--on-surface-variant); font-size: var(--fs-label-l); line-height: 1.5; }
+.demo-note a { color: var(--on-surface); }
+/* playing: lines not yet said keep their place but stay invisible; a new line rises in with the spatial spring */
+.demo[data-ready]:not([data-still]) .msg:not([data-shown]) { opacity: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .demo[data-ready] .msg { transition: opacity var(--dur-spatial) var(--spring-spatial), translate var(--dur-spatial) var(--spring-spatial); }
+  .demo[data-ready]:not([data-still]) .msg:not([data-shown]) { translate: 0 12px; }
+}
+
+/* ── bands: flat glass in one defined colour (no gradient, no light edge, no shadow), generous, with wide
+   air between them so each one locks in clearly. Inside, structure comes from space, type and hairlines, never cards. ── */
+.deck { display: grid; gap: var(--space-16); }
+@media (min-width: 860px) { .deck { gap: var(--space-24); } }
+.band { --band-tone: color-mix(in oklch, var(--primary) 5%, var(--surface-container-low));
+  position: relative; padding-block: var(--space-12); padding-inline: var(--space-5); border-radius: var(--shape-xl-inc);
+  background: color-mix(in oklch, var(--band-tone) 94%, transparent); border: 1px solid var(--outline-variant);
+  -webkit-backdrop-filter: blur(var(--plate-blur)); backdrop-filter: blur(var(--plate-blur)); }
+@media (min-width: 860px) { .band { padding-block: var(--space-16); padding-inline: var(--space-10); } }
+@media (min-width: 1200px) { .band { padding-block: var(--space-24); padding-inline: var(--space-16); } }
+@media (prefers-reduced-transparency: reduce) { .band { background: var(--band-tone); -webkit-backdrop-filter: none; backdrop-filter: none; } }
+.band-head { max-width: 60ch; gap: var(--space-4); margin-bottom: var(--space-10); }
+.band-head h2 { max-width: 22ch; }
+.band-head:last-child { margin-bottom: 0; }
+.band-kicker { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); color: var(--on-surface-variant); font: 500 var(--fs-label-l) / 1.3 var(--font-ui); }
+.band p { max-width: 60ch; }
+.band > p + p, .band > figure + p { margin-top: var(--space-4); }
+.band-more { margin-top: var(--space-8); }
+.band-more a, .finale .cluster a:not(.btn) { display: inline-flex; align-items: center; min-height: var(--size-target); }
+
+/* ── the lock (js/site.js marks .deck[data-lock] where scroll timelines exist and motion is welcome): each
+   band but the last sticks once it is fully in view, at --lock-top (100px under the bar, or, for a band taller
+   than the window, where its own end meets the bottom), so nothing of it is ever out of reach. The next band,
+   higher in the stack, slides over it, and the one beneath recedes: smaller, dimmer, softly blurred, driven by
+   the next band's entry. While keyboard focus is in the deck, nothing sticks. Without scroll timelines, without
+   the script and with reduced motion the bands are a calm, still column. ── */
+.deck > .band:nth-child(1) { z-index: 1; } .deck > .band:nth-child(2) { z-index: 2; view-timeline-name: --band-2; }
+.deck > .band:nth-child(3) { z-index: 3; view-timeline-name: --band-3; } .deck > .band:nth-child(4) { z-index: 4; view-timeline-name: --band-4; }
+.deck > .band:nth-child(5) { z-index: 5; view-timeline-name: --band-5; }
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) and (timeline-scope: --band-2) {
+    .deck[data-lock] { timeline-scope: --band-2, --band-3, --band-4, --band-5; }
+    .deck[data-lock] > .band:not(:last-child) { position: sticky; top: var(--lock-top, 100px); transform-origin: 50% 0%; animation: band-recede linear both; animation-range: entry 0% entry 100%; }
+    .deck[data-lock] > .band:nth-child(1) { animation-timeline: --band-2; }
+    .deck[data-lock] > .band:nth-child(2) { animation-timeline: --band-3; }
+    .deck[data-lock] > .band:nth-child(3) { animation-timeline: --band-4; }
+    .deck[data-lock] > .band:nth-child(4) { animation-timeline: --band-5; }
+    .deck[data-lock]:has(:focus-visible) > .band { position: relative; top: auto; animation: none; }
+  }
+}
+@keyframes band-recede { from { transform: none; filter: none; } to { transform: scale(0.95); filter: blur(3px) brightness(0.62); } }
+
+/* how it works and get started: a path without numbers, one hairline between the steps */
+.path { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.path > li { display: grid; gap: var(--space-2); padding: var(--space-6) 0; position: relative; border-top: 1px solid var(--outline-variant); }
+.path > li p { color: var(--on-surface-variant); max-width: 52ch; }
+@media (min-width: 960px) {
+  .path:not(.path-steps) { grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: var(--space-8); }
+}
+.clis { display: flex; flex-wrap: wrap; gap: var(--space-2); list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+.clis .chip { height: 36px; color: var(--on-surface-variant); }
+.clis .chip::after, .clis .chip::before { content: none; }
+
+/* the way into a terminal, for those who never opened one: folded, one hairline, no card */
+.terminal-help { margin-top: var(--space-3); max-width: 60ch; }
+.terminal-help summary { display: inline-flex; align-items: center; min-height: var(--size-target); color: var(--primary); font: 500 var(--fs-body-l) / 1.3 var(--font-ui); cursor: pointer; }
+.terminal-help-body { display: grid; gap: var(--space-3); padding: var(--space-3) 0 var(--space-2) var(--space-4); border-left: 2px solid var(--outline-variant); }
+.terminal-help-body p { color: var(--on-surface); }
+kbd { padding: 1px 6px; border-radius: var(--shape-xs); background: var(--surface-container-high); font: 500 0.92em / 1 var(--font-plex-mono); }
+
+/* the setup sentence: one copy line, then the spoken result */
+.setup { display: grid; gap: var(--space-3); max-width: 960px; margin-top: var(--space-10); }
+.setup-label { color: var(--on-surface-variant); font: 500 var(--fs-label-l) / 1.3 var(--font-ui); }
+.setup .copyline { padding: var(--space-4) var(--space-3) var(--space-4) var(--space-5); }
+.setup .copyline p { font-size: var(--fs-body-l); }
+
+/* five strengths and limits: rows with a hairline, two-up from 960px */
+.strengths, .limits { display: grid; margin: 0; padding: 0; list-style: none; column-gap: var(--space-10); }
+.strengths > li, .limits > li { display: grid; gap: var(--space-2); align-content: start; padding-block: var(--space-6); border-top: 1px solid var(--outline-variant); }
+.strengths > li p, .limits > li p { color: var(--on-surface-variant); max-width: 52ch; }
+@media (min-width: 960px) {
+  .strengths, .limits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .strengths > li:first-child { grid-column: 1 / -1; }
+  .strengths > li:first-child h3 { font-size: var(--fs-headline-m); }
+}
+
+/* it builds itself: three real log lines, then the sentence once more */
+.log { display: grid; gap: var(--space-2); margin: 0; padding: var(--space-5); overflow-x: auto; font: 500 var(--fs-label-l) / 1.6 var(--font-plex-mono); border-radius: var(--shape-l-inc); }
+.log p { max-width: none; }
+.log-hash { color: var(--primary); margin-right: var(--space-2); }
+.finale { display: grid; gap: var(--space-5); margin-top: var(--space-12); padding-top: var(--space-10); border-top: 1px solid var(--outline-variant); }
+.finale .cluster { --gap: var(--space-3) var(--space-5); }
+.finale .btn .icon { width: 18px; height: 18px; }
+
+/* cards elsewhere (the short pages): v8 card on a plane, content-sized */
+.card { gap: var(--space-3); padding: var(--space-6); }
+.card p { max-width: 42ch; }
+.grid-12 { display: grid; gap: var(--space-6); }
+@media (min-width: 860px) { .grid-12 { grid-template-columns: repeat(12, minmax(0, 1fr)); } .grid-12 > * { grid-column: span 6; } }
+@media (min-width: 960px) { .grid-12 > .span-5 { grid-column: span 5; } .grid-12 > .span-7 { grid-column: span 7; } }
+.card .label { color: var(--on-surface-variant); font: 500 var(--fs-label-l) / 1.3 var(--font-plex-mono); }
+
+/* ── docs: a grouped section list next to readable prose; on phones a chip row that says it goes on ── */
+.docs { padding-block: var(--space-6) var(--space-16); }
+@media (min-width: 860px) { .docs { padding-top: var(--space-8); } }
+.prose { max-width: min(60ch, var(--size-read)); }
+.prose h2 { scroll-margin-top: 104px; }
+.prose > .lead { margin-top: var(--space-5); }
+@media (max-width: 959px) { .docs-nav { position: relative; align-items: center; } }
+.docs-group { flex: none; color: var(--on-surface-variant); font: 600 var(--fs-label-l) / 1.3 var(--font-ui); }
+.docs-group:not(:first-child) { margin-left: var(--space-3); }
+.docs-nav a { min-height: 40px; }
+.docs-nav a::before { content: ""; position: absolute; inset: -4px 0; }
+.docs-nav a { position: relative; }
+.docs-nav a[aria-current="location"] { background: var(--indicator); color: var(--on-indicator); font-weight: 600; }
+.docs-nav[data-more] { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 48px), transparent); }
+@media (min-width: 960px) {
+  .docs-nav { align-items: stretch; }
+  .docs-nav[data-more] { -webkit-mask-image: none; mask-image: none; }
+  .docs-group { padding: 0 var(--space-3); }
+  .docs-group:not(:first-child) { margin: var(--space-5) 0 var(--space-1); }
+  .docs-nav a::before { inset: 8px auto 8px 0; width: 3px; border-radius: var(--shape-full); background: transparent; transition: background-color var(--dur-spatial-fast) var(--spring-spatial-fast); }
+  .docs-nav a[aria-current="location"] { background: color-mix(in oklch, var(--on-surface) 8%, transparent); color: var(--on-surface); }
+  .docs-nav a[aria-current="location"]::before { background: var(--indicator); }
+}
+
+/* the short pages: one readable column with the same air as a band */
+.page-body { padding-block: var(--space-6) var(--space-16); }
+@media (min-width: 860px) { .page-body { padding-top: var(--space-8); } }
+.page-body > .prose + .grid-12 { margin-top: var(--space-10); }
+.page-body .card .btn { justify-self: start; margin-top: var(--space-2); }
+
+/* ── footer: calm, VAIEV first, then the open-source line and the links ── */
+.site-foot { display: grid; gap: var(--space-3); padding: var(--space-12) 0 var(--space-10); color: var(--on-surface-variant); font-size: var(--fs-body-m); }
+.site-foot a { color: inherit; }
+.site-foot .vaiev { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--size-target); color: var(--on-surface); font: 600 var(--fs-title-l) / 1 var(--font-ui); letter-spacing: 0.02em; text-decoration: none; }
+.site-foot .vaiev .logo { width: 34px; height: 23px; }
+.foot-made { display: flex; }
+.foot-legal { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--space-4); font-size: var(--fs-body-m); }
+.foot-legal > span { flex-basis: 100%; padding-block: var(--space-2); }
+@media (min-width: 860px) { .foot-legal > span { flex-basis: auto; margin-right: auto; } }
+.foot-legal a { display: inline-flex; align-items: center; min-height: var(--size-target); text-decoration: none; }
+.foot-legal a:hover, .foot-legal a:focus-visible { color: var(--on-surface); text-decoration: underline; }
+.foot-legal .gh { width: var(--size-target); justify-content: center; }
+
+/* ── og-card.html: the 1200×630 social preview, rendered to og.png; opened at #icon it is the 180×180
+   apple-touch-icon.png. Not linked from any page. ── */
+.og-card { width: 1200px; height: 630px; overflow: hidden; }
+.og-frame { width: 1200px; height: 630px; padding: var(--space-24); display: grid; align-content: center; justify-items: start; gap: var(--space-6); }
+.og-lockup { gap: var(--space-4); }
+.og-lockup img:first-child { width: 96px; height: 96px; }
+.og-lockup .logo { width: 250px; height: 56px; }
+.og-frame .display-l { font-size: var(--fs-display-l); }
+.og-line { font-size: var(--fs-headline-l); line-height: 1.3; color: var(--on-surface-variant); }
+.og-host { margin-top: var(--space-4); font-size: var(--fs-headline-s); color: var(--primary); }
+.og-icon { display: none; }
+.og-card:has(#icon:target) { width: 180px; height: 180px; }
+.og-card:has(#icon:target) .og-frame { display: none; }
+.og-icon:target { display: grid; place-items: center; width: 180px; height: 180px; background: var(--surface); }
+.og-icon img { width: 132px; height: 132px; }

@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""team: run this folder's agent team. Every bot works in its own sandbox; this folder stays untouched.
+
+  team context [--claude]             open board rows, questions and unfinished flows, for a new session
+                                      (--claude: as a Claude Code SessionStart hook)
+
+  team run ID TASK --brief FILE [--tier light|mid|strong] [--runner NAME] [--model NAME] [--effort LEVEL]
+           [--input PATH]... [--repo [REF]] [--detach] [--dry-run]
+           [--egress HOSTS|none]
+                                      hand a brief to a bot; with --repo the bot gets this repository at REF
+                                      (default HEAD), or another one with --repo PATH[@REF], and a worker's
+                                      commits come back there as branch <team>/<TASK>;
+                                      --detach returns at once (a stopped caller never stops the run)
+  team result ID TASK [--wait SECONDS]
+                                      the run's state, or its return block and branch once done
+                                      (exit 3: still working, 4: a usage limit, until a reset time)
+
+  team gate TASK --repo REF|PATH@REF --base REF [--brief FILE] [--fresh-cache]
+                                      the pre-gate of a branch, no model, no keys: files against the brief's
+                                      Paths, then [flow] gate on the head in a sandbox (exit 0 green, 1 red)
+  team gate --fresh-cache             empty the gate cache (WOUF_CACHE), which every task's gate shares
+
+  team flow TASK --brief FILE --repo PATH[@REF] [--detach]
+                                      take a task through its class's steps: scout where the class or brief
+                                      asks, worker, gate and review, blocked after two review rounds with
+                                      changes (--answer grants one more), to ready, blocked, limited or a
+                                      question; again later to continue it. decision, analysis and plan have no
+                                      review: they end ready after their work step, unreviewed
+                                      (Class: plan runs scout and planner and ends ready with the plan's paths)
+  team flow TASK [--answer TEXT] [--retry] [--status]
+                                      continue with an answer, after a limit, or show where it stands
+
+How bots run (mode = container): one image for the whole team holds the agent CLIs and tools; each bot has
+its own storage volume; a container exists only while a bot works on a task. Nothing of this folder or this
+computer is mounted: briefs, inputs and a git bundle are copied in, results, logs and commits copied out.
+Keys reach the bot through the container's standard input for one run and are masked in the output.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import re
+import sys
+import traceback
+from pathlib import Path
+
+sys.dont_write_bytecode |= sys.argv[1:2] in (["update"], ["--version"])  # Preview imports must be read only.
+# Load only the adjacent teamlib; check preloaded modules before importing core, which executes code.
+TEAMLIB = Path(__file__).resolve().parent / "teamlib"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+def pack_module(name: str, module) -> bool:
+    """Whether a teamlib package or module already loaded under this name is this pack's own."""
+    if name == "teamlib":
+        return [Path(p).resolve() for p in getattr(module, "__path__", [])] == [TEAMLIB]
+    file = getattr(module, "__file__", None)
+    return file is not None and Path(file).resolve() == TEAMLIB / f"{name.split('.', 1)[1]}.py"
+
+
+# A refusal prints a fixed line and nothing of the foreign origin: no path, module name or traceback.
+REFUSED = "team: refused: teamlib is not the copy next to this team"
+for _name, _module in list(sys.modules.items()):
+    if (_name == "teamlib" or _name.startswith("teamlib.")) and not pack_module(_name, _module):
+        sys.exit(REFUSED)
+from teamlib import core  # noqa: E402
+from teamlib.core import *  # noqa: E402,F401,F403
+
+if Path(core.__file__).resolve().parent != TEAMLIB:
+    sys.exit(REFUSED)
+# The commands come through the registry; these names stay reachable on this file, loaded as a module (federate).
+from teamlib.engine import cli_of, engine_env, image_tools, recipe, where  # noqa: E402,F401
+from teamlib.run import (HOLD_LINES, LIMIT_PATTERNS, copy_regular, execute, limit_hit,  # noqa: E402,F401
+                         mask_stream, merge_log, pack_stage)
+from teamlib.flow import class_options, flow_next  # noqa: E402,F401
+
+for _name in ("engine", "run", "gate", "flow"):
+    if Path(sys.modules[f"teamlib.{_name}"].__file__).resolve().parent != TEAMLIB:
+        sys.exit(REFUSED)
+
+
+# The commands main handles itself; no module may take one of these names.
+BUILT_IN = ("help", "-h", "--help", "--version")
+MODULE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def registry() -> tuple[dict, list[str]]:
+    """The commands and usage texts of the modules in teamlib/ next to this file, kernel aside, in sorted order. Each
+    may define COMMANDS = {"name": handler}, a handler taking the arguments and returning the exit code, and USAGE.
+    Only plain lowercase names are imported; a command name taken twice stops the helper, naming both owners."""
+    commands, owners, usages = {}, dict.fromkeys(BUILT_IN, "a built-in command"), []
+    for path in sorted((Path(__file__).resolve().parent / "teamlib").glob("*.py")):
+        if path.stem in ("__init__", "core") or not MODULE.fullmatch(path.stem):
+            continue
+        module = importlib.import_module(f"teamlib.{path.stem}")
+        for name, handler in getattr(module, "COMMANDS", {}).items():
+            if name in owners:
+                die(f"command {name!r} of teamlib/{path.name} clashes with {owners[name]}")
+            owners[name], commands[name] = f"teamlib/{path.name}", handler
+        if getattr(module, "USAGE", ""):
+            usages.append(module.USAGE.strip("\n"))
+    return commands, usages
+
+
+def main(argv: list[str]) -> int:
+    commands, usages = registry()
+    if argv in (["--version"], ["doctor"]):
+        return importlib.import_module("teamlib.update").version_command(argv[0], commands)
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        say("\n\n".join([__doc__.strip(), *usages]))
+        return 0
+    if argv[0] in commands:
+        return commands[argv[0]](argv[1:])
+    config()
+    die(f"unknown command: {' '.join(argv)} (see: team help)")
+    return 0
+
+
+def report_failure(kind, error, trace) -> None:
+    """The one place an uncaught error is shown: masked, one line; the full traceback, masked, with WOUF_DEBUG=1."""
+    # Masked before visible(): an escaped line break would no longer match a registered multi-line value.
+    say(f"team: unexpected {kind.__name__}: {visible(mask_secrets(str(error), KNOWN))}", err=True)
+    if os.environ.get("WOUF_DEBUG") == "1":
+        say("".join(traceback.format_exception(kind, error, trace)).rstrip(), err=True)
+
+
+def guarded(argv: list[str]) -> int:
+    try:
+        (importlib.import_module("teamlib.update").register_secrets if argv[:1] in (["update"], ["--version"]) else register_stored)()
+        return main(argv)
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException as error:
+        report_failure(type(error), error, error.__traceback__)
+        return 1
+
+
+def hook(kind, error, trace) -> None:
+    if issubclass(kind, KeyboardInterrupt):
+        sys.__excepthook__(kind, error, trace)
+    else:
+        report_failure(kind, error, trace)
+
+
+sys.excepthook = hook
+
+if __name__ == "__main__":
+    sys.exit(guarded(sys.argv[1:]))

@@ -1,0 +1,122 @@
+name: docs-ci
+on:
+  # No `push` trigger: the ruleset only allows merges through PRs, and the
+  # PR run already tested the merge ref (the squash result).
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: docs-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  # Decides whether the install jobs run: only when the PR touches the
+  # install path. Only the install jobs depend on it; docs and test always run.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      install: ${{ steps.filter.outputs.install }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # HEAD is the merge ref; its first parent (the base tip) is enough.
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install-path files changed by this PR
+        id: filter
+        run: |
+          # --no-renames: a moved file lists both its old and its new path.
+          changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+          if printf '%s\n' "$changed" | grep -Eq '^(INSTALL\.md|scripts/install-smoke\.sh|tests/test_install_smoke\.py|\.agents/START\.md)$|^\.agents/team/'; then
+            echo "install=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "install=false" >> "$GITHUB_OUTPUT"
+          fi
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: DavidAnson/markdownlint-cli2-action@05f32210e84442804257b2a6f20b273450ec8265 # v19.1.0
+        with:
+          globs: "**/*.md"
+      - uses: lycheeverse/lychee-action@82202e5e9c2f4ef1a55a3d02563e1cb6041e5332 # v2.4.1
+        with:
+          args: --offline --no-progress "**/*.md"
+          fail: true
+          failIfEmpty: false
+      - name: actionlint (pinned binary, sha256-verified)
+        run: |
+          curl -sSLo /tmp/al.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  /tmp/al.tgz" | sha256sum -c -
+          tar xzf /tmp/al.tgz -C /tmp actionlint
+          /tmp/actionlint
+  test:
+    # ubuntu-latest moved to 26.04, where setup-python has no 3.9; 24.04 keeps the oldest promised version.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        # The helpers promise Python 3.9+: test the oldest and a current version.
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Pack tests
+        run: python3 scripts/test-parallel.py
+  # The bwrap sandbox (mode = bwrap) and its runs against a real bubblewrap; a skipped test fails the job.
+  bwrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install bubblewrap
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap
+      - name: Allow unprivileged user namespaces (this runner only)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Isolation, run, egress and prefix tests (none may skip)
+        shell: bash
+        run: |
+          bwrap --version
+          python3 -m unittest tests.test_bwrap_isolation tests.test_bwrap_run tests.test_bwrap_egress \
+            tests.test_bwrap_prefix tests.test_bwrap_gate -v 2>&1 | tee /tmp/bwrap.log
+          if grep -Eq '\.\.\. skipped|skipped=' /tmp/bwrap.log; then
+            echo "::error::a bwrap test was skipped"
+            exit 1
+          fi
+  install:
+    needs: changes
+    if: needs.changes.outputs.install == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["python:3.9-slim", "ubuntu:24.04"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Bare clone of this commit
+        run: git clone --bare --quiet "$GITHUB_WORKSPACE" /tmp/pack.git
+      - name: INSTALL.md in a fresh container
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" -v /tmp/pack.git:/pack.git:ro \
+            -e WOUF_INSTALL_SRC=file:///pack.git \
+            "$IMAGE" sh -c '
+              if ! command -v git >/dev/null || ! command -v python3 >/dev/null; then
+                apt-get update -qq && apt-get install -y -qq --no-install-recommends git python3 ca-certificates
+              fi
+              git config --global --add safe.directory "*"
+              bash /src/scripts/install-smoke.sh /src'

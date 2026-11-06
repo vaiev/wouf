@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en" data-brand="wouf" data-theme="dark" data-icons="icons.svg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; media-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+<title>Examples — WOUF</title>
+<meta name="description" content="Four examples of an agent team in a folder, from a project lead in an authority to a developer.">
+<link rel="icon" href="brand/wouf-icon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://wouf.dev/examples.html">
+<meta property="og:title" content="Examples — WOUF">
+<meta property="og:description" content="Four examples of an agent team in a folder, from a project lead in an authority to a developer.">
+<meta property="og:url" content="https://wouf.dev/examples.html">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="WOUF">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://wouf.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="WOUF: An agent team in a folder. Set up with the AI tool you already use. wouf.dev">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Examples — WOUF">
+<meta name="twitter:description" content="Four examples of an agent team in a folder, from a project lead in an authority to a developer.">
+<meta name="twitter:image" content="https://wouf.dev/og.png">
+<meta name="theme-color" content="#0a0c11">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/site-fonts.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/materials.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/patterns.css">
+<link rel="stylesheet" href="css/site.css">
+<link rel="stylesheet" href="css/examples.css">
+<link rel="expect" href="#end" blocking="render">
+<script src="js/vt.js"></script>
+<script src="js/vaiev.js" defer></script>
+<script src="js/site.js" defer></script>
+<script src="js/examples.js" defer></script>
+</head>
+<body>
+<div class="field" aria-hidden="true"></div>
+<a class="skip" href="#doc">Skip to content</a>
+<header class="site-bar lens" data-collapsible>
+  <a class="lockup brand-word" href="index.html" aria-label="WOUF, home"><svg class="logo" aria-hidden="true"><use href="icons.svg#wouf-word"/></svg></a>
+  <nav class="site-links" aria-label="Sections"><a class="home-link" href="index.html">Home</a><a href="examples.html" aria-current="page">Examples</a><a href="docs.html">Docs</a></nav>
+  <a class="icon-btn press gh" href="https://github.com/vaiev/wouf" aria-label="WOUF on GitHub"><svg class="icon" aria-hidden="true"><use href="icons.svg#github"/></svg></a>
+</header>
+<main class="page site wide" id="top">
+  <div class="page-body">
+    <article class="prose" id="doc"><h1>Examples</h1><p class="lead">Four ways to use the team, from a project lead in an authority to a developer. Each starts small and can grow.</p><p class="examples-note">Each one is an illustrated scenario, not a transcript: what the bots say depends on the model, your setup and your answers.</p></article>
+    <nav class="example-nav" aria-label="Examples on this page"><a class="chip" href="#authority">Project lead</a><a class="chip" href="#club">Club</a><a class="chip" href="#company">Company</a><a class="chip" href="#developer">Developer</a></nav>
+    <div class="examples">
+
+    <section class="band example" id="authority" aria-labelledby="authority-h">
+      <div class="example-head">
+        <p class="example-mark">Illustrated scenario</p>
+        <h2 class="display-s" id="authority-h">A project lead in an authority</h2>
+        <p class="example-start lead">A project lead in an authority runs a project with a phase-based method such as HERMES and wants its phases, results, decisions and dates in files anyone can follow, without writing code.</p>
+      </div>
+      <div class="example-body">
+        <figure class="demo" data-demo aria-labelledby="authority-cap">
+          <div class="demo-bar"><div class="demo-controls"><button class="demo-btn" type="button" data-demo-toggle>Pause</button><button class="demo-btn" type="button" data-demo-restart>Restart</button></div></div>
+          <div class="demo-panes">
+            <ol class="demo-dialog" data-scenario="authority" data-active aria-label="Dialog of the project lead">
+              <li class="msg msg-you"><span class="who">You</span><p>WOUF, draft our project plan from the documents in this folder: phases, results, decisions and dates. Show it to me before anything else.</p></li>
+              <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll ask the worker to draft a plan and the review bot to check it.</p></li>
+              <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>What date should the plan use for the first decision?</p></li>
+              <li class="msg msg-you"><span class="who">You</span><p>March 3.</p></li>
+              <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed draft is ready for you: a plan and decision notes in the task files.</p></li>
+            </ol>
+          </div>
+          <p class="demo-compose" aria-hidden="true"><span class="demo-prompt">›</span><span class="demo-typed" data-demo-typed></span><span class="demo-send"><svg class="icon icon-s"><use href="icons.svg#send"/></svg></span></p>
+          <figcaption class="demo-note" id="authority-cap">An illustrated scenario, not a transcript: what the bots say depends on the model, your setup and your answers.</figcaption>
+        </figure>
+        <div class="example-parts">
+          <div class="example-folder"><h3 class="title-m">In the folder at the end</h3><ul>
+            <li>The plan and the decision notes, in the task files.</li>
+            <li>The board with the task and its state, a file you can open.</li>
+            <li>Team events and readable summaries can live in your Git repository, so you can follow the work over time.</li>
+          </ul></div>
+          <div class="example-bots"><h3 class="title-m">Who took part</h3><ul>
+            <li>The lead, WOUF: talks to you, writes the brief and brings the questions to you.</li>
+            <li>The worker: drafts the plan.</li>
+            <li>The review bot: checks the result against the brief before it comes to you.</li>
+          </ul></div>
+          <div class="example-where"><h3 class="title-m">Where it runs</h3>
+            <p>You decide where team, files and model run. No WOUF cloud, no WOUF server. Compliance depends on the model and how you run it.</p>
+            <p>A cloud agent CLI works through its provider's model API over the network: it sends content to that provider. A compatible local model can be configured with Codex, subject to your setup and model support.</p>
+          </div>
+          <div class="example-own"><h3 class="title-m">What you must settle yourself</h3><ul>
+            <li>Which information the team may see at all, decided with your data protection and information security officers. WOUF has no classification of its own: what is in the folder and the briefs is what the bots can work with.</li>
+            <li>Where the folder, the bots and the model run, and what the chosen model provider processes and where. A local model setup is yours to verify.</li>
+            <li>Which network destinations are allowed: container mode, never host mode, and either no network or an allowlist you approved, including the model hosts each agent CLI adds.</li>
+            <li>Your own review of the setup, the model provider, the network rules and the stored logs. The review bot checks results against briefs; it does not check legal or data protection requirements.</li>
+            <li>The legal assessment, by someone with the right expertise. Data protection and sovereignty are goals your organisation sets and checks itself; WOUF does not ensure them on its own.</li>
+            <li>Where to begin: one low-risk use, such as drafting summaries of public documents, and more only after your review.</li>
+          </ul></div>
+          <p class="example-docs"><a href="docs.html#where">Where the bots run, in the docs<svg class="icon" aria-hidden="true"><use href="icons.svg#arrow-right"/></svg></a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band example" id="club" aria-labelledby="club-h">
+      <div class="example-head">
+        <p class="example-mark">Illustrated scenario</p>
+        <h2 class="display-s" id="club-h">A small team or club without tech</h2>
+        <p class="example-start lead">A club organises a summer fair with a venue, a few suppliers, invitations and a budget in a spreadsheet, and nobody on the team writes code.</p>
+      </div>
+      <div class="example-body">
+        <figure class="demo" data-demo aria-labelledby="club-cap">
+          <div class="demo-bar"><div class="demo-controls"><button class="demo-btn" type="button" data-demo-toggle>Pause</button><button class="demo-btn" type="button" data-demo-restart>Restart</button></div></div>
+          <div class="demo-panes">
+            <ol class="demo-dialog" data-scenario="club" data-active aria-label="Dialog of the club">
+              <li class="msg msg-you"><span class="who">You</span><p>WOUF, make a task list for the summer fair from the notes in this folder, and show it to me before anything else.</p></li>
+              <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll have the worker prepare a task list and review check it.</p></li>
+              <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>Who should own the welcome desk?</p></li>
+              <li class="msg msg-you"><span class="who">You</span><p>Sam.</p></li>
+              <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed task list is ready in the task files, with Sam as owner.</p></li>
+              <li class="msg msg-you"><span class="who">You</span><p>WOUF, remind me every Monday at 8 to check the supplier answers.</p></li>
+              <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>Reminders come up when you open a session, unless you set up a scheduler on your computer.</p></li>
+            </ol>
+          </div>
+          <p class="demo-compose" aria-hidden="true"><span class="demo-prompt">›</span><span class="demo-typed" data-demo-typed></span><span class="demo-send"><svg class="icon icon-s"><use href="icons.svg#send"/></svg></span></p>
+          <figcaption class="demo-note" id="club-cap">An illustrated scenario, not a transcript: what the bots say depends on the model, your setup and your answers.</figcaption>
+        </figure>
+        <div class="example-parts">
+          <div class="example-folder"><h3 class="title-m">In the folder at the end</h3><ul>
+            <li>The task list with Sam as owner, in the task files.</li>
+            <li>The board: the open items and their state, a file you can open.</li>
+            <li>The schedule with the Monday reminder, as a readable file.</li>
+          </ul></div>
+          <div class="example-bots"><h3 class="title-m">Who took part</h3><ul>
+            <li>The lead, WOUF: talks to you and passes the question on.</li>
+            <li>The worker: prepares the task list.</li>
+            <li>The review bot: checks it before it comes to you.</li>
+            <li>Later, when you need one: the writer, one of the ready example bots.</li>
+          </ul></div>
+          <div class="example-own"><h3 class="title-m">What you must settle yourself</h3><ul>
+            <li>Sending stays your step. Ask for drafts, not actions: give the bots no mail account or other way to send, and send yourself.</li>
+            <li>The rules tell the bots that routine, reversible work goes ahead and every decision beyond that comes to you. These are instructions the models follow, not a lock.</li>
+            <li>Reminders come up when you open a session; for anything more, set up a scheduler on your computer.</li>
+            <li>You choose where to run your team and which available model service to use; WOUF does not require its own cloud or server.</li>
+          </ul></div>
+          <p class="example-docs"><a href="docs.html#use">Use it, in the docs<svg class="icon" aria-hidden="true"><use href="icons.svg#arrow-right"/></svg></a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band example" id="company" aria-labelledby="company-h">
+      <div class="example-head">
+        <p class="example-mark">Illustrated scenario</p>
+        <h2 class="display-s" id="company-h">A team in a company</h2>
+        <p class="example-start lead">A team of five in a company wants a shared agent team for internal documentation and small tools.</p>
+      </div>
+      <div class="example-body">
+        <figure class="demo" data-demo aria-labelledby="company-cap">
+          <div class="demo-bar"><div class="demo-controls"><button class="demo-btn" type="button" data-demo-toggle>Pause</button><button class="demo-btn" type="button" data-demo-restart>Restart</button></div></div>
+          <div class="demo-panes">
+            <ol class="demo-dialog" data-scenario="company" data-active aria-label="Dialog of the company team">
+              <li class="msg msg-you"><span class="who">You</span><p>WOUF, draft a page of our internal documentation from the meeting notes in this folder.</p></li>
+              <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll ask the worker to draft it and the review bot to check it.</p></li>
+              <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>Who approves the page before it is shared?</p></li>
+              <li class="msg msg-you"><span class="who">You</span><p>Mia, our team lead.</p></li>
+              <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed draft is ready for you in the task files, with Mia as approver.</p></li>
+            </ol>
+          </div>
+          <p class="demo-compose" aria-hidden="true"><span class="demo-prompt">›</span><span class="demo-typed" data-demo-typed></span><span class="demo-send"><svg class="icon icon-s"><use href="icons.svg#send"/></svg></span></p>
+          <figcaption class="demo-note" id="company-cap">An illustrated scenario, not a transcript: what the bots say depends on the model, your setup and your answers.</figcaption>
+        </figure>
+        <div class="example-parts">
+          <div class="example-folder"><h3 class="title-m">In the folder at the end</h3><ul>
+            <li>The reviewed draft, in the task files.</li>
+            <li>The board, the decisions and the logs: files your team can review regularly.</li>
+            <li>With a second team: teams can exchange signed handoffs through a shared Git repository, without a dedicated WOUF server. What arrives is held until someone applies it.</li>
+          </ul></div>
+          <div class="example-bots"><h3 class="title-m">Who took part</h3><ul>
+            <li>The lead, WOUF: talks to you and brings the question about the approval to you.</li>
+            <li>The worker: drafts the page.</li>
+            <li>The review bot: checks the result in a fresh context before it comes to you.</li>
+            <li>Later: more bots for recurring work, more runners, and token budgets per day or per run.</li>
+          </ul></div>
+          <div class="example-own"><h3 class="title-m">What you must settle yourself</h3><ul>
+            <li>Who owns the setup: one person or a small group who answers the questions and holds the keys.</li>
+            <li>Where the bots run, for example on a VM or server you control, so they do not run on a laptop.</li>
+            <li>Approvals: the team's rules say irreversible, outward, paid and new-access steps wait for a person. These are instructions to the models, so you enforce them by what you give the bots: no accounts, keys or access they could use for such a step on their own.</li>
+            <li>When to let the team decide more: only for reversible work, once you trust the results.</li>
+            <li>Which network hosts the work needs, after a trial run that shows which hosts the agent CLI really uses.</li>
+            <li>For the exchange: the peers, their keys and a shared Git repository both teams can reach.</li>
+            <li>Your company's own rules for the team, and keeping sensitive material out of the folder unless the setup is approved for it.</li>
+          </ul></div>
+          <p class="example-docs"><a href="docs.html#yours">Make it yours, in the docs<svg class="icon" aria-hidden="true"><use href="icons.svg#arrow-right"/></svg></a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="band example" id="developer" aria-labelledby="developer-h">
+      <div class="example-head">
+        <p class="example-mark">Illustrated scenario</p>
+        <h2 class="display-s" id="developer-h">A developer</h2>
+        <p class="example-start lead">A developer maintains a small web application in a git repository with a test suite.</p>
+      </div>
+      <div class="example-body">
+        <figure class="demo" data-demo aria-labelledby="developer-cap">
+          <div class="demo-bar"><div class="demo-controls"><button class="demo-btn" type="button" data-demo-toggle>Pause</button><button class="demo-btn" type="button" data-demo-restart>Restart</button></div></div>
+          <div class="demo-panes">
+            <ol class="demo-dialog" data-scenario="developer" data-active aria-label="Dialog of the developer">
+              <li class="msg msg-you"><span class="who">You</span><p>WOUF, fix the crash when the upload is empty, and run it as a flow.</p></li>
+              <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll brief worker and ask review to check the change.</p></li>
+              <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>Should an empty upload be rejected?</p></li>
+              <li class="msg msg-you"><span class="who">You</span><p>Yes. And add the check for missing titles alongside it.</p></li>
+              <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>For a batch, WOUF checks that the tasks' declared file areas do not overlap before starting them together.</p></li>
+              <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed changes and their tests are ready on their task branches for your decision.</p></li>
+            </ol>
+          </div>
+          <p class="demo-compose" aria-hidden="true"><span class="demo-prompt">›</span><span class="demo-typed" data-demo-typed></span><span class="demo-send"><svg class="icon icon-s"><use href="icons.svg#send"/></svg></span></p>
+          <figcaption class="demo-note" id="developer-cap">An illustrated scenario, not a transcript: what the bots say depends on the model, your setup and your answers.</figcaption>
+        </figure>
+        <div class="example-parts">
+          <div class="example-folder"><h3 class="title-m">In the folder at the end</h3><ul>
+            <li>A task branch for each change, with the change and its test.</li>
+            <li>The review of the exact commit: approved, or the changes it asks for.</li>
+            <li>The board with both tasks and their state.</li>
+          </ul></div>
+          <div class="example-bots"><h3 class="title-m">Who took part</h3><ul>
+            <li>The lead, WOUF: writes each brief with its class and its paths.</li>
+            <li>The worker: makes the change. With a sandboxed setup each bot works in its own workspace, separate from your project and home folders.</li>
+            <li>The review bot: checks the result in a fresh context and approves the exact commit, or asks for changes.</li>
+            <li>No bot, but a step before review: a configurable check can catch some increases in code complexity before review without an AI call.</li>
+          </ul></div>
+          <div class="example-own"><h3 class="title-m">What you must settle yourself</h3><ul>
+            <li>Which command runs your tests: it becomes the gate, so every change is tested before review. The shipped gate is empty; the complexity check runs only once you configure it as the gate.</li>
+            <li>A sandboxed setup: container mode with Docker or Podman, or bubblewrap. Host mode has no sandbox.</li>
+            <li>Which tasks really are independent: the batch check reads the declared paths and cannot prove semantic or external independence.</li>
+            <li>The merge. The flow and the merge proposal never merge, and the team's rules are instructions, not branch protection: set up protection for your main branch and required checks in your repository host, and do the merge yourself.</li>
+          </ul></div>
+          <p class="example-docs"><a href="docs.html#how">How it works, in the docs<svg class="icon" aria-hidden="true"><use href="icons.svg#arrow-right"/></svg></a></p>
+        </div>
+      </div>
+    </section>
+
+    </div>
+  </div>
+  <footer class="site-foot">
+    <p class="foot-made"><a class="vaiev" href="https://vaiev.com"><svg class="logo" aria-hidden="true"><use href="icons.svg#vaiev-symbol"/></svg>VAIEV</a></p>
+    <p class="foot-legal"><span>© 2026 VAIEV · WOUF is open source under the Apache 2.0 license</span><a class="icon-btn press gh" href="https://github.com/vaiev/wouf" aria-label="WOUF on GitHub"><svg class="icon icon-s" aria-hidden="true"><use href="icons.svg#github"/></svg></a><a href="index.html">Home</a><a href="docs.html">Docs</a><a href="changelog.html">Changelog</a><a href="contribute.html">Contribute</a><a href="https://vaiev.com/privacy/">Privacy</a></p>
+  </footer>
+</main>
+<span id="end" hidden></span>
+</body>
+</html>

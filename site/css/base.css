@@ -1,0 +1,119 @@
+/* VAIEV UI v8 — base: document, type, layout, the light field.
+   Load order: tokens.css, fonts.css, base.css, materials.css, components.css. Put data-brand on <html>
+   (on wouf.dev: wouf); data-theme="light" | "dark" fixes the mode.
+
+   The two rules everything else follows: content lies on opaque planes or thick plates, controls are thin
+   lenses that float a gap away from every edge; depth comes from blur, layering and springs, never from
+   drop shadows. */
+
+/* Pages move like an app. js/vt.js names the direction of each navigation; the page slides, while the
+   Omniboard (morph-bar), the site bar and [data-morph] elements keep their own names and morph instead.
+   right: the next page comes in from the right · left: from the left · site: a fade-through between sites. */
+@view-transition { navigation: auto; }
+@media (prefers-reduced-motion: reduce) { @view-transition { navigation: none; } }
+::view-transition-group(*) { animation-duration: var(--dur-spatial-slow); animation-timing-function: var(--spring-spatial-slow); }
+::view-transition-old(root), ::view-transition-new(root) { animation-duration: var(--dur-spatial); animation-timing-function: var(--spring-effects); animation-fill-mode: both; }
+html:active-view-transition-type(right)::view-transition-old(root) { animation-name: vt-to-left; }
+html:active-view-transition-type(right)::view-transition-new(root) { animation-name: vt-from-right; }
+html:active-view-transition-type(left)::view-transition-old(root) { animation-name: vt-to-right; }
+html:active-view-transition-type(left)::view-transition-new(root) { animation-name: vt-from-left; }
+html:active-view-transition-type(site)::view-transition-old(root) { animation-name: vt-recede; }
+html:active-view-transition-type(site)::view-transition-new(root) { animation-name: vt-arrive; }
+@keyframes vt-from-right { from { translate: 100% 0; } }
+@keyframes vt-from-left { from { translate: -100% 0; } }
+@keyframes vt-to-left { to { translate: -22% 0; opacity: 0.5; } }
+@keyframes vt-to-right { to { translate: 22% 0; opacity: 0.5; } }
+@keyframes vt-recede { to { scale: 0.94; opacity: 0; } }
+@keyframes vt-arrive { from { scale: 1.04; opacity: 0; } }
+
+/* between origins: the curtain the leaving page morphs into, and the one the next page lifts (js/vt.js) */
+.curtain { position: fixed; inset: 0; z-index: 1000; background: var(--curtain-logo, none) center / var(--curtain-size, 96px) auto no-repeat, var(--curtain, var(--surface)); }
+.curtain[data-to="wouf"], html[data-brand="wouf"] { --curtain: oklch(0.155 0.01 270); --curtain-logo: url("../brand/wouf-icon.svg"); }
+html.vv-arrive body::after { content: ""; position: fixed; inset: 0; z-index: 1000; pointer-events: none; background: var(--curtain-logo, none) center / var(--curtain-size, 96px) auto no-repeat, var(--curtain, var(--surface)); animation: curtain-lift var(--dur-spatial-slow) var(--spring-effects) 120ms both; }
+@keyframes curtain-lift { to { opacity: 0; scale: 1.04; visibility: hidden; } }
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; background: var(--surface); }
+body {
+  margin: 0; min-height: 100dvh;
+  color: var(--on-surface); /* no background here: html carries it, so the light field (z-index -1) shows */
+  font: 400 var(--fs-body-l) / 1.5 var(--font-ui);
+  -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+}
+img, video, svg { display: block; max-width: 100%; }
+button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
+button { cursor: pointer; }
+a { color: inherit; }
+h1, h2, h3, h4, p, figure, blockquote, ul, ol, dl, dd { margin: 0; }
+ul[role="list"], ol[role="list"] { list-style: none; padding: 0; }
+[hidden]:not([hidden="until-found" i]) { display: none !important; }
+:focus-visible { outline: 2px solid var(--indicator); outline-offset: 3px; }
+::selection { background: color-mix(in oklch, var(--indicator) 30%, transparent); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.skip { position: absolute; left: var(--space-4); top: -100px; z-index: 100; padding: var(--space-3) var(--space-4); border-radius: var(--shape-full); background: var(--indicator); color: var(--on-indicator); text-decoration: none; }
+.skip:focus { top: var(--space-4); }
+
+/* ── type: M3 scale; display lines take the brand's display family and weight ── */
+.display-l, .display-m, .display-s { font-family: var(--font-display); font-weight: var(--display-weight); letter-spacing: -0.025em; line-height: 1.02; text-wrap: balance; }
+.display-l { font-size: var(--fs-display-l); }
+.display-m { font-size: var(--fs-display-m); line-height: 1.05; }
+.display-s { font-size: var(--fs-display-s); line-height: 1.1; }
+.headline-l, .headline-m, .headline-s { font-family: var(--font-display); font-weight: var(--display-weight); letter-spacing: -0.015em; line-height: 1.2; text-wrap: balance; }
+.headline-l { font-size: var(--fs-headline-l); }
+.headline-m { font-size: var(--fs-headline-m); }
+.headline-s { font-size: var(--fs-headline-s); }
+.title-l { font-size: var(--fs-title-l); font-weight: 500; line-height: 1.3; }
+.title-m { font-size: var(--fs-title-m); font-weight: 500; line-height: 1.4; }
+.title-s { font-size: var(--fs-title-s); font-weight: 500; line-height: 1.4; }
+.body-l { font-size: var(--fs-body-l); }
+.body-m { font-size: var(--fs-body-m); }
+.body-s { font-size: var(--fs-body-s); }
+.label-l { font-size: var(--fs-label-l); font-weight: 500; line-height: 1.3; }
+.label-m { font-size: var(--fs-label-m); font-weight: 500; line-height: 1.3; }
+.caps { font-size: var(--fs-label-s); font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; line-height: 1.3; }
+.mono { font-family: var(--font-plex-mono); font-weight: 500; letter-spacing: 0; }
+.muted { color: var(--on-surface-variant); }
+.num { font-variant-numeric: tabular-nums; }
+.pretty { text-wrap: pretty; }
+
+/* ── layout ── */
+.page {
+  padding-inline: max(var(--space-4), env(safe-area-inset-left, 0px));
+  padding-top: calc(var(--space-4) + env(safe-area-inset-top, 0px));
+  /* room for the floating dock: bar + gap + safe area */
+  padding-bottom: calc(var(--size-bar) + var(--size-float-gap) * 2 + env(safe-area-inset-bottom, 0px));
+}
+@media (min-width: 768px) { .page { padding-inline: var(--space-10); } }
+.read { max-width: var(--size-read); margin-inline: auto; }
+.wide { max-width: 1200px; margin-inline: auto; }
+.stack { display: flex; flex-direction: column; gap: var(--gap, var(--space-4)); }
+.stack-2 { --gap: var(--space-2); } .stack-3 { --gap: var(--space-3); } .stack-6 { --gap: var(--space-6); } .stack-10 { --gap: var(--space-10); }
+.cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--gap, var(--space-2)); }
+.between { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.grow { flex: 1 1 auto; min-width: 0; }
+
+/* ── the light field: a few huge, soft colour clouds behind everything, drifting slowly, so glass has
+   something to refract. Put one <div class="field" aria-hidden="true"></div> first in <body>. ── */
+.field { position: fixed; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; background: var(--surface); }
+.field::before, .field::after {
+  content: ""; position: absolute; inset: -30%;
+  background:
+    radial-gradient(40% 35% at 18% 22%, var(--field-1), transparent 70%),
+    radial-gradient(45% 40% at 85% 70%, var(--field-2), transparent 72%);
+  animation: field-drift 46s ease-in-out infinite alternate;
+}
+.field::after {
+  background: radial-gradient(38% 34% at 70% 18%, var(--field-3), transparent 70%);
+  animation-duration: 61s; animation-direction: alternate-reverse;
+}
+@keyframes field-drift {
+  from { transform: translate3d(-3%, -2%, 0) rotate(0deg) scale(1); }
+  to { transform: translate3d(4%, 3%, 0) rotate(8deg) scale(1.08); }
+}
+
+/* ── motion: springs from the tokens; reduced motion stops all of it ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  .field::before, .field::after { animation: none; }
+}

@@ -1,0 +1,42 @@
+/* Generated guide additions to the shared v8 docs layout; no vendor overrides. */
+.docs-generated { min-width: 0; }
+.docs-nav-group { display: flex; flex: none; align-items: center; gap: var(--space-2); }
+.docs-generated .docs-group { margin: 0; }
+.docs-generated .docs-nav { position: sticky; top: 0; z-index: 2; align-self: start; max-width: 100%; background: var(--surface); scrollbar-width: thin; }
+.docs-generated .docs-nav[data-more] { mask-image: none; -webkit-mask-image: none; }
+.docs-generated .docs-nav a { min-height: 44px; }
+.docs-generated .docs-nav a::before { pointer-events: none; }
+.docs-generated .docs-nav a:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.docs-generated .prose :is(h2, h3, h4, h5, h6), .docs-anchor { scroll-margin-top: 104px; }
+.docs-anchor { display: block; height: 0; }
+.docs-generated .prose h2 { border-top: 1px solid var(--outline-variant); padding-top: var(--space-8); }
+.docs-generated .prose h3 { margin-top: var(--space-10); }
+.docs-generated .prose h4 { margin-top: var(--space-8); font: 500 var(--fs-title-m) / 1.4 var(--font-ui); }
+.docs-generated .prose :is(h5, h6) { margin-top: var(--space-6); font: 500 var(--fs-body-l) / 1.5 var(--font-ui); }
+.docs-fork { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-block: var(--space-6); }
+.docs-note { color: var(--on-surface-variant); }
+.docs-note dfn { color: var(--on-surface); font-style: normal; font-weight: 600; }
+.docs-setup { padding: var(--space-5); background: color-mix(in oklch, var(--primary) 12%, var(--surface)); border: 1px solid var(--primary); border-radius: var(--shape-l); }
+.docs-setup .copyline { flex-direction: column; align-items: stretch; padding: 0; background: transparent; box-shadow: none; border: 0; }
+.docs-setup .copyline p { font: 500 var(--fs-title-m) / 1.6 var(--font-ui); }
+.docs-setup > p { margin-top: var(--space-4); }
+.docs-setup #copy-status { min-height: 1.6em; }
+.docs-details { border-block: 1px solid var(--outline-variant); padding-block: var(--space-4); }
+.docs-details summary { cursor: pointer; min-height: 44px; font-weight: 600; }
+.docs-details > :not(summary) { margin-top: var(--space-4); }
+.docs-details summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.docs-privacy > * + * { margin-top: var(--space-4); }
+.docs-generated .prose, .page-body .prose { overflow-wrap: anywhere; }
+@media (min-width: 860px) and (max-width: 959px) {
+  .docs-generated .docs-nav { position: relative; top: 0; }
+}
+@media (min-width: 960px) {
+  .docs-generated .docs-nav { top: 104px; max-height: calc(100vh - 120px); max-height: calc(100dvh - 120px); overflow-y: auto; overflow-x: hidden; background: transparent; }
+  .docs-nav-group { flex-direction: column; align-items: stretch; gap: 2px; }
+  .docs-nav-group + .docs-nav-group { margin-top: var(--space-5); }
+  .docs-generated .docs-group { margin-block: 0 var(--space-2); }
+  .docs-generated .docs-nav a { line-height: 1.4; padding-block: var(--space-2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .docs-generated .docs-nav, .docs-generated .docs-nav a::before { scroll-behavior: auto; transition: none; }
+}

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# Local working notes (state, architecture, plans, specs); never pushed.
+/private/
+/CLAUDE.local.md

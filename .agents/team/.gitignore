@@ -1,0 +1,13 @@
+# The bot environment staging folder is local; only its README is versioned.
+env/*
+!env/README.md
+# The log search index is a cache rebuilt from the .jsonl files.
+logs/.index.sqlite
+# Never versioned, whatever an agent writes here.
+*.env
+.env*
+*.key
+*.pem
+
+# Installation HMAC key; never exported or staged.
+.salt

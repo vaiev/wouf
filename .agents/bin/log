@@ -1,0 +1,1681 @@
+#!/usr/bin/env python3
+"""log: one line per run, cheap to search. Receipts for the team, the Lead and the human.
+
+  log add ID TASK OUTCOME "signal" [--ref REF] [--cost COST]
+                       append one receipt to ID.jsonl (ID: lead, worker, review, decide, ...)
+  log event add KIND --actor ID [--task T] [--scope local|link] --data JSON
+                       append a validated, masked, locked and fsynced event (<= 4096 bytes)
+  log event list [--since SEQ] [--origin O] [--kind K] [--task T]
+                       matching events as masked JSON lines; since is exclusive per origin
+  log event check      malformed/torn record count per file; exit 1 if any
+  log state rebuild|check|get TABLE [--task T] [--json]
+  log state wait --since SEQ [--timeout S]  poll the rebuildable WAL bus
+  log status           where each member stands: its latest line
+  log task TASK        timeline of one task across members
+  log find WORDS [--member ID] [--limit N]
+                       full-text search (SQLite index, rebuilt when logs change)
+  log ask "words" [-k N] [--json]  quoted knowledge, decisions and accepted lessons
+  log ask --build-shared OUT       knowledge-only snapshot for sandboxes
+  log tail [ID] [-n N] the last lines, of one member or all
+
+Reads team/logs/*.jsonl and the logs bots bring back from their sandboxes (team/env/*/logs).
+The .jsonl files are the source and live in git. .index.sqlite is a cache: delete it any time.
+Events live in tracked team/events/<origin>.jsonl; ORIGIN is created on first write.
+WOUF_EVENTS_DIR overrides team/events. Writers refuse a torn local tail pending repair.
+Knowledge caches use team/env/knowledge.sqlite; WOUF_KNOWLEDGE_DB names a read-only staged snapshot.
+Shared snapshots contain only team/knowledge Markdown, never events or configured project sources.
+JSON display returns null when the requested document conflicts with the secret check.
+Configured sources (config.ini [knowledge] sources) are local Markdown or UTF-8 text; a skipped one is named on stderr.
+WOUF_LOG_DIR overrides the directory (default: .agents/team/logs next to this script).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hmac
+import stat
+import importlib.util
+import errno
+import json
+import os
+import re
+import secrets
+import sqlite3
+import sys
+import traceback
+from datetime import datetime, timezone
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+OUTCOMES = ("started", "done", "blocked", "asked", "approve", "changes", "decided", "no-change", "failed",
+            "limited")
+MAX_SIGNAL = 120
+# Long runs of key characters. "/", "." and "-" split paths, branch names and SHAs from tokens.
+TOKEN_LIKE = re.compile(r"[A-Za-z0-9+_=]{32,}")
+CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+MAX_REF = 200
+FIELDS = ("t", "who", "task", "outcome", "signal", "ref", "cost")
+
+# ---- secret patterns: the same block in bin/team and bin/log (tests/test_log.py compares them) ----
+# Anchored: each key's own prefix, alphabet and length, with no key character right before or after it, so
+# words, paths, branch names and hex commit ids never match. Prefixes are split so this file holds none.
+KEY_BEGIN = r"-{4,5} ?BEGIN [A-Z0-9 _-]{0,40}?PRIVATE KEY(?: BLOCK)? ?-{4,5}"
+KEY_END = KEY_BEGIN.replace("BEGIN", "END")
+SECRET_PATTERNS = tuple((kind, re.compile(pattern)) for kind, pattern in (
+    ("GitHub classic", r"(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9_]{36,251}(?![A-Za-z0-9_])"),
+    ("GitHub fine-grained", r"(?<![A-Za-z0-9_])github_" r"pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}(?![A-Za-z0-9_])"),
+    ("Anthropic", r"(?<![A-Za-z0-9_-])sk-" r"ant-[A-Za-z0-9_-]{20,}"),
+    ("OpenAI", r"(?<![A-Za-z0-9_-])sk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{40,}|"
+               r"[A-Za-z0-9_-]{16,}T3Blbk" r"FJ[A-Za-z0-9_-]{16,})(?![A-Za-z0-9_-])"),
+    ("AWS access key", r"(?<![A-Za-z0-9_])(?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16}(?![A-Za-z0-9_])"),
+    ("Google API key", r"(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"),
+    ("Slack token", r"(?<![A-Za-z0-9_-])(?:(?:xox[abeprs]|xapp)-[0-9]{1,16}|xw" r"fp)-[A-Za-z0-9-]{10,}|"
+                    r"hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}"),
+    ("age secret key", r"(?<![A-Za-z0-9_-])AGE-SECRET" r"-KEY-1[0-9A-Z]{58}(?![A-Za-z0-9_])"),
+    # The whole block up to its END line; without one, the header and the key lines right under it.
+    ("private key", KEY_BEGIN + r"(?:[\s\S]*?" + KEY_END +
+                    r"|[A-Za-z0-9+/=]*(?:\r?\n[A-Za-z0-9+/=]{4,}(?=\r?\n|\Z))*)"),
+))
+MASK = "***"
+
+
+def secret_in(text: str) -> str | None:
+    """The kind of the first key found in text, or None; never the value."""
+    return next((kind for kind, pattern in SECRET_PATTERNS if pattern.search(text)), None)
+
+
+def mask_secrets(text: str, values=()) -> str:
+    """text with every key a pattern recognizes and each passed value replaced by ***. All matches are found in
+    the original text, so a passed value that overlaps a key cannot hide its prefix or header; overlaps are one mask."""
+    spans = [m.span() for _, pattern in SECRET_PATTERNS for m in pattern.finditer(text)]
+    spans += [m.span() for value in values if value for m in re.finditer(re.escape(value), text)]
+    merged: list[list[int]] = []
+    for start, stop in sorted(spans):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], stop)
+        else:
+            merged.append([start, stop])
+    out, pos = [], 0
+    for start, stop in merged:
+        out += [text[pos:start], MASK]
+        pos = stop
+    return "".join(out) + text[pos:]
+
+# A store that cannot be read is recorded here, not raised: the caller stops at its first command (usage text aside).
+UNREADABLE: list[str] = []
+STORE_UNREADABLE = ("the secret store is locked or not answering, so its keys cannot be masked; "
+                    "unlock it in your own terminal and run again")
+
+
+def stored_values() -> list[str]:
+    """The values of every secret in the store (bin/secret next to this file), longest first; never shown. A listed
+    secret that cannot be read gives none and sets UNREADABLE: nothing is printed or written past that point. A team
+    process has read its store already (teamlib.core keeps those reads): they are used, so a value is read once."""
+    kept = getattr(sys.modules.get("teamlib.core"), "STORE_READS", None)
+    if kept:
+        return sorted((v for v in kept.values() if v), key=len, reverse=True)
+    try:
+        loader = SourceFileLoader("wouf_secret_store", str(Path(__file__).resolve().parent / "secret"))
+        spec = importlib.util.spec_from_loader("wouf_secret_store", loader)
+        store = importlib.util.module_from_spec(spec)
+        loader.exec_module(store)
+        names = store.names()
+    except (Exception, SystemExit):
+        return []
+    found = set()
+    for name in names:
+        try:
+            found.add(store.read_value(name))
+        except (Exception, SystemExit):
+            UNREADABLE.append(STORE_UNREADABLE)
+            return []
+    return sorted((v for v in found if v), key=len, reverse=True)
+# ---- end of secret patterns ----
+
+
+def registered() -> list[str]:
+    """Exact values the caller registered, as a JSON list in WOUF_MASK (team sets it from the stored secrets and
+    the keys of a run); they are masked like key shapes. Anything else in it is ignored."""
+    try:
+        values = json.loads(os.environ.get("WOUF_MASK") or "[]")
+    except ValueError:
+        return []
+    return [v for v in values if isinstance(v, str) and v] if isinstance(values, list) else []
+
+
+# Registered before the first sink: the values the caller passed, then every stored secret, so a log run by hand
+# masks what the store holds without being told. Passed values the store does not hold are the run's own keys.
+STORED = stored_values()
+PASSED = [v for v in registered() if v not in STORED]
+REGISTERED = sorted({*PASSED, *STORED}, key=len, reverse=True)
+# An importer (companion, federate, team's state) gets no mask from a store that cannot be read: it stops here, with one
+# line. Run as a script, log goes on to its usage text and its own checks.
+if UNREADABLE and __name__ != "__main__":
+    raise SystemExit(f"log: {UNREADABLE[0]}")
+
+
+def mask(text: str) -> str:
+    """mask_secrets with the registered values: every text this helper shows or writes goes through here."""
+    return mask_secrets(text, REGISTERED)
+
+
+# ---- task ids: the same block in bin/team and bin/log (tests/test_log.py compares them) ----
+# Task ids name folders and branches: no ".", "..", hidden or option-like names (fullmatch, so no newline).
+TASK = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,39}")
+# Names Windows keeps for devices, with or without an extension: no folder can carry them there.
+DEVICE = re.compile(r"(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", re.IGNORECASE)
+
+
+def task_problem(task: str) -> str | None:
+    """Why task cannot name a folder on every host and one component of a git ref, or None. A task id that
+    looks like a key is refused without repeating it."""
+    kind = secret_in(task)
+    if kind:
+        return f"the task id looks like it contains a secret ({kind}); name the task, never a value"
+    if not TASK.fullmatch(task):
+        return f"task {task!r}: 1 to 40 letters, digits, . _ -, not starting with . or -"
+    if task.endswith(".") or ".." in task or task.lower().endswith(".lock"):
+        return f"task {task!r} cannot be a git branch name: no '.' at the end, no '..', no '.lock' at the end"
+    if DEVICE.fullmatch(task):
+        return f"task {task!r} is a device name on Windows (CON, PRN, AUX, NUL, COM1-9, LPT1-9); use another id"
+    return None
+
+
+def case_twin(task: str, known) -> str | None:
+    """A known task id that differs from task only in case: T-1 and t-1 are one folder on a case-insensitive disk."""
+    return next((n for n in sorted(set(known)) if n != task and n.lower() == task.lower() and TASK.fullmatch(n)), None)
+
+# Member (bot) ids name storage, folders, branches and log files: the same ref and portability rules as task ids.
+MEMBER_ID = re.compile(r"[a-z][a-z0-9-]{1,30}")
+
+
+def member_problem(member: str) -> str | None:
+    """Why member cannot be a bot id (a folder, a branch part and a log file name on every host), or None. An id
+    that looks like a key is refused without repeating it."""
+    kind = secret_in(member)
+    if kind:
+        return f"the member id looks like it contains a secret ({kind}); name the bot, never a value"
+    if not MEMBER_ID.fullmatch(member) or member.endswith("-") or "--" in member:
+        return f"member id {member!r}: 2 to 31 lowercase letters, digits and -, starting with a letter, no '--', not ending with -"
+    if DEVICE.fullmatch(member):
+        return f"member id {member!r} is a device name on Windows (CON, PRN, AUX, NUL, COM1-9, LPT1-9); use another id"
+    return None
+# ---- end of task ids ----
+
+
+def say(text: str = "", err: bool = False) -> None:
+    """The one way out to stdout and stderr: nothing reaches a terminal unmasked."""
+    (sys.stderr if err else sys.stdout).write(mask(text) + "\n")
+
+
+def put(handle, text: str | dict | bytes) -> None:
+    """The file sink: mask text; write checked event lines or the binary installation salt to an integer fd."""
+    if isinstance(handle, int):
+        # The stored event line, already serialized and checked: written as given, never masked or re-serialized
+        # (a registered value could itself be JSON syntax or a schema key).
+        raw = text if isinstance(text, bytes) else text.encode('utf-8')
+        if len(raw) > 4096:
+            die('event exceeds 4096 bytes')
+        if os.write(handle, raw) != len(raw):
+            die('short event write; local event file needs repair')
+    else:
+        handle.write(mask(text))
+
+
+def die(message: str, code: int = 2) -> None:
+    say(f"log: {message}", err=True)
+    raise SystemExit(code)
+
+
+def log_dir() -> Path:
+    path = Path(os.environ.get("WOUF_LOG_DIR") or Path(__file__).resolve().parent.parent / "team" / "logs")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+# The installation salt, read or made once per process for each team folder (a changed folder needs a new process).
+SALTS = {}
+
+
+def installation_salt() -> bytes:
+    """One private installation key, outside exports; a broken entry at .salt is replaced without following links."""
+    import fcntl
+    directory = log_dir().parent / 'env'
+    if directory not in SALTS:
+        try:
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            # A symlinked team/env is the human's own setup: resolve it once. Only the salt itself is never a link.
+            directory_fd = os.open(os.path.realpath(directory), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                # Lock the directory so readers never observe a concurrent creator's partial write.
+                fcntl.flock(directory_fd, fcntl.LOCK_EX)
+                salt = read_salt(directory_fd)
+                SALTS[directory] = salt if salt is not None else write_salt(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError as error:
+            die(f"cannot write the installation salt in {directory}: {error.strerror or error}")
+    return SALTS[directory]
+
+
+def read_salt(directory_fd: int) -> bytes | None:
+    """The stored salt if '.salt' is a private 32-byte regular file; any other entry, or any error on it, is broken."""
+    try:
+        fd = os.open('.salt', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        # Any errno (a socket gives ENXIO, a link ELOOP, an unreadable file EACCES): the entry is broken.
+        discard_salt(directory_fd)
+        return None
+    try:
+        # Check the file before reading: a FIFO or a directory is never read, and a link is never followed.
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode) and info.st_size == 32 and stat.S_IMODE(info.st_mode) == 0o600:
+            salt = os.read(fd, 33)
+            if len(salt) == 32:
+                return salt
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+    discard_salt(directory_fd)
+    return None
+
+
+def discard_salt(directory_fd: int) -> None:
+    """Remove a broken '.salt' without following it: a file, link, socket or FIFO is unlinked, an empty directory
+    is removed, and anything else is kept aside as .salt.broken-<n>."""
+    try:
+        info = os.lstat('.salt', dir_fd=directory_fd)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(info.st_mode):
+        os.unlink('.salt', dir_fd=directory_fd)
+        return
+    try:
+        os.rmdir('.salt', dir_fd=directory_fd)
+        return
+    except OSError:
+        pass
+    n = 1
+    while True:
+        name = f'.salt.broken-{n}'
+        try:
+            os.lstat(name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            os.rename('.salt', name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            return
+        n += 1
+
+
+def write_salt(directory_fd: int) -> bytes:
+    """A new salt, written under a temporary name and renamed into place, so '.salt' is never half written."""
+    salt = secrets.token_bytes(32)
+    temporary = f'.salt.{secrets.token_hex(8)}.tmp'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            put(handle.fileno(), salt)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.rename(temporary, '.salt', src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary, dir_fd=directory_fd)
+        raise
+    return salt
+
+
+def cache_hash(data: bytes) -> str:
+    """Key every cache digest: source bytes and names can contain registered values too."""
+    return hmac.new(installation_salt(), data, "sha256").hexdigest()
+
+
+def log_files() -> list[Path]:
+    """The team's own logs plus the log each bot brought back from its sandbox (team/env/<id>/logs/<id>.jsonl)."""
+    directory = log_dir()
+    files = sorted(directory.glob("*.jsonl"))
+    files += sorted(p for p in (directory.parent / "env").glob("*/logs/*.jsonl") if p.stem == p.parent.parent.name)
+    return files
+
+
+def entries(member: str | None = None):
+    for path in log_files():
+        if member and path.stem != member:
+            continue
+        # A bot's own log may only speak for that bot.
+        owner = path.stem if path.parent.parent.parent.name == "env" else None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                if owner and (entry.get("who") != owner or entry.get("outcome") not in OUTCOMES):
+                    continue
+                # Every field as text, so an odd line can neither break sorting nor the index; a receipt that
+                # never passed log add (a bot's own file, an import) loses any key here, before index or screen.
+                yield {k: "" if entry.get(k) is None else mask(str(entry.get(k))) for k in FIELDS}
+
+
+def clean(value, limit: int = 80) -> str:
+    """Lines come partly from bots: no keys, no control characters, bounded length."""
+    return CONTROL.sub(" ", mask(str(value if value is not None else "")))[:limit]
+
+
+def local(stamp) -> str:
+    # Stored in UTC with milliseconds for ordering; shown in local time, to the minute.
+    try:
+        return datetime.fromisoformat(str(stamp)).astimezone().strftime("%Y-%m-%dT%H:%M")
+    except ValueError:
+        return clean(stamp, 16)
+
+
+def fmt(e: dict) -> str:
+    parts = [f"{local(e.get('t', '?'))} {clean(e.get('who', '?'), 31)} {clean(e.get('task', '-'), 40)} "
+             f"{clean(e.get('outcome', '?'), 12)}", clean(e.get("signal"), MAX_SIGNAL), clean(e.get("ref"), MAX_REF) or "-"]
+    if e.get("cost"):
+        parts.append(f"~{clean(e['cost'], 20)}")
+    return " | ".join(parts)
+
+
+def token_like(text: str) -> bool:
+    for match in TOKEN_LIKE.finditer(text):
+        word = match.group(0)
+        # Random keys mix upper case, lower case and digits; SHAs and snake_case names do not.
+        if all(re.search(c, word) for c in ("[A-Z]", "[a-z]", "[0-9]")):
+            return True
+    return False
+
+
+def check_text(label: str, text: str) -> None:
+    kind = secret_in(text) or ("a token" if token_like(text) else None)
+    if kind:
+        die(f"{label} looks like it contains a secret ({kind}); log names and links, never values")
+
+
+def check_task(task: str) -> None:
+    problem = task_problem(task)
+    if problem:
+        die(f"{problem} (use - for none)")
+    # Every place the team records a task: receipts, bot stages, flows and the gate's folders.
+    team = log_dir().parent
+    known = [e["task"] for e in entries()]
+    known += [p.name for p in [*(team / "env").glob("*/tasks/*"), *(team / "env" / "gate").glob("*"),
+                               *(team / "flows").glob("*")]]
+    twin = case_twin(task, known)
+    if twin:
+        twin = clean(twin, 40)
+        die(f"task {task!r} differs only in case from the existing task {twin!r}; use {twin} or a new id")
+
+
+def cmd_add(args: list[str]) -> None:
+    opts = {"--ref": "", "--cost": ""}
+    positional = []
+    it = iter(args)
+    for arg in it:
+        if arg in opts:
+            opts[arg] = next(it, "")
+        else:
+            positional.append(arg)
+    if len(positional) != 4:
+        die('usage: log add ID TASK OUTCOME "signal" [--ref REF] [--cost COST]')
+    who, task, outcome, signal = positional
+    problem = member_problem(who)
+    if problem:
+        die(problem)
+    if task != "-":
+        check_task(task)
+    # A registered value names a file here (the member's log) or a folder elsewhere: refused, never masked.
+    for label, name in (("member id", who), ("task id", task)):
+        if any(v in name for v in REGISTERED):
+            die(f"the {label} is or contains a secret value; name it, never a value")
+    if outcome not in OUTCOMES:
+        die(f"outcome must be one of: {', '.join(OUTCOMES)}")
+    if len(signal) > MAX_SIGNAL:
+        die(f"signal is {len(signal)} characters; keep it under {MAX_SIGNAL}, link details with --ref")
+    for label, text in (("signal", signal), ("ref", opts["--ref"]), ("cost", opts["--cost"])):
+        check_text(label, text)
+    entry = {"t": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), "who": who, "task": task,
+             "outcome": outcome, "signal": signal, "ref": opts["--ref"], "cost": opts["--cost"]}
+    line = json_text(entry) + "\n"
+    try:  # never through a link: a linked receipt file would put the line somewhere nobody looks
+        fd = os.open(log_dir() / f"{who}.jsonl", os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+                     0o644)
+    except OSError as error:
+        die(f"cannot append to {who}.jsonl ({'it is a link' if error.errno == errno.ELOOP else error.strerror})")
+    with os.fdopen(fd, "a", encoding="utf-8") as handle:
+        put(handle, line)
+
+
+# Event payload keys are explicit so additions require a contract change. Nested
+# objects (options, artifacts, token counts) still pass the same string checks.
+EVENT_DATA_KEYS = {
+    'session.started': {'cli', 'reason'},
+    'session.ended': {'cli', 'reason'},
+    'task.created': {'title', 'class', 'owner', 'next_gate'},
+    'task.state': {'state', 'owner', 'next_gate', 'blocked_reason', 'artifacts'},
+    'run.started': {'bot', 'runner', 'tier', 'model', 'effort', 'outcome', 'verdict', 'ref', 'tokens'},
+    'run.finished': {'bot', 'runner', 'tier', 'model', 'effort', 'outcome', 'verdict', 'ref', 'tokens'},
+    'flow.step': {'kind', 'status', 'until'},
+    'question.asked': {'id', 'text', 'from'},
+    'question.answered': {'id', 'text', 'from'},
+    'decision.recorded': {'number', 'title', 'options', 'why', 'risk', 'authority', 'next', 'status', 'decided_by',
+                          'note'},
+    'lesson.proposed': {'title', 'body', 'topic', 'source'},
+    # Inline fields keep older accepted events replayable; team lesson accept writes only id.
+    'lesson.accepted': {'id', 'title', 'body', 'topic'},
+    'usage.session': {'first_turn_tokens', 'time_to_first_action', 'tokens_to_first_action', 'total_tokens'},
+    'message.urgent': {'text', 'to'},
+    'schedule.item': {'id', 'title', 'when', 'status', 'owner', 'task', 'action', 'kind', 'ending', 'last_run'},
+    'claim.set': {'id', 'owner', 'paths', 'until'},
+    'claim.released': {'id', 'owner', 'reason'},
+    'handoff.created': {'id', 'from', 'to', 'text', 'artifacts'},
+    'handoff.done': {'id', 'from', 'to', 'outcome'},
+    'phase.state': {'phase', 'state', 'reason'},
+    'dag.edge': {'from', 'to', 'relation'},
+    'a2a.sent': {'id', 'origin', 'to', 'seq', 'kind', 'exp'},
+    'a2a.received': {'id', 'origin', 'to', 'seq', 'kind', 'exp', 'status', 'code'},
+    'a2a.refused': {'origin', 'code', 'count'},
+    'merge.proposed': {'task', 'head', 'branch', 'verdict'},
+    'merge.marked': {'task', 'head', 'branch', 'verdict'},
+}
+EVENT_ORIGIN = re.compile(r'[0-9a-f]{12}')
+EVENT_CONTROL = re.compile(r'[\x00-\x09\x0b-\x1f\x7f-\x9f]')
+EVENT_FIELDS = {'v', 'id', 'seq', 't', 'origin', 'actor', 'kind', 'task', 'scope', 'data'}
+
+
+def events_dir() -> Path:
+    return Path(os.environ.get('WOUF_EVENTS_DIR') or
+                Path(__file__).resolve().parent.parent / 'team' / 'events')
+
+
+def event_value(value, writing: bool = True, depth: int = 0, limit: int = 500):
+    """Validate JSON values before any sink; sanitize strings without truncation."""
+    if depth > 16:
+        raise ValueError('event data nesting exceeds 16 levels')
+    if isinstance(value, str):
+        if len(value) > limit:
+            raise ValueError(f'event strings must be at most {limit} characters')
+        if writing:
+            check_text('event string', value)
+        value = EVENT_CONTROL.sub('', value)
+        # Stripping controls must not assemble a key which evaded the first check.
+        if writing:
+            check_text('event string', value)
+        value = mask(value)
+        if writing and len(value) > limit:
+            raise ValueError(f'masked event strings must be at most {limit} characters')
+        return value
+    if value is None or type(value) is bool:
+        return value
+    if type(value) in (int, float) and value == value and abs(value) != float('inf'):
+        # A number is text in the file: a registered value spelled as digits is refused, never written or shown.
+        if safe_json(value) is None:
+            raise ValueError('event number contains a registered secret value')
+        return value
+    if isinstance(value, list):
+        return [event_value(v, writing, depth + 1) for v in value]
+    if isinstance(value, dict) and all(isinstance(k, str) for k in value):
+        result = {}
+        for k, v in value.items():
+            key = event_value(k, writing, depth + 1)
+            if writing and key in result:
+                raise ValueError('event keys collide after sanitizing')
+            result[key] = event_value(v, writing, depth + 1)
+        return result
+    raise ValueError('event data must contain only finite JSON values')
+
+
+def event_data(kind, data, writing=True):
+    """Only the top-level lesson body gets the larger text limit; all sinks stay shared."""
+    if kind.startswith('lesson.') and 'body' in data:
+        body = data['body']
+        if not isinstance(body, str):
+            raise ValueError('lesson body must be text')
+        rest = event_value({k: v for k, v in data.items() if k != 'body'}, writing)
+        rest['body'] = event_value(body, writing, limit=2000)
+        return rest
+    return event_value(data, writing)
+
+
+def event_validate(kind, actor, task, data, scope) -> None:
+    if not isinstance(kind, str) or kind not in EVENT_DATA_KEYS:
+        raise ValueError('unknown event kind')
+    if not isinstance(actor, str) or (actor not in ('lead', 'human', 'team') and member_problem(actor)):
+        raise ValueError('invalid event actor')
+    if not isinstance(task, str) or (task and task_problem(task)):
+        raise ValueError('invalid event task')
+    if scope not in ('local', 'link'):
+        raise ValueError('event scope must be local or link')
+    if not isinstance(data, dict) or any(k not in EVENT_DATA_KEYS[kind] for k in data):
+        raise ValueError('event data keys must match the kind allowlist')
+    if kind.startswith('lesson.'):
+        if 'body' in data and (not isinstance(data['body'], str) or len(data['body']) > 2000):
+            raise ValueError('lesson body must be text of at most 2000 characters')
+        if 'source' in data and (not isinstance(data['source'], str) or
+                                 (data['source'] != 'lead' and member_problem(data['source']))):
+            raise ValueError('invalid lesson source')
+        if 'id' in data and (not isinstance(data['id'], str) or
+                             not re.fullmatch(r'L-[0-9a-f]{12}-[1-9][0-9]*', data['id'])):
+            raise ValueError('invalid lesson id')
+    if kind.startswith('question.') and 'id' in data and not (
+            isinstance(data['id'], str) and re.fullmatch(r'Q-[0-9]{1,9}', data['id'])):
+        raise ValueError('question id must look like Q-<n>')
+    if kind.startswith('merge.') and not (
+            isinstance(data.get('head'), str) and re.fullmatch(r'[0-9a-f]{7,40}', data['head'])):
+        raise ValueError('merge head must be 7 to 40 lowercase hex characters')
+
+
+def event_pairs(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def event_parse(raw: bytes, origin: str, masked: bool = True) -> dict:
+    if len(raw) > 4096 or not raw.endswith(b'\n'):
+        raise ValueError('oversized or torn event')
+    e = json.loads(raw, object_pairs_hook=event_pairs)
+    if not isinstance(e, dict) or set(e) != EVENT_FIELDS:
+        raise ValueError('invalid event envelope')
+    seq = e['seq']
+    if (type(e['v']) is not int or e['v'] != 1 or type(seq) is not int or seq < 1 or
+            e['origin'] != origin or e['id'] != f'{origin}-{seq}'):
+        raise ValueError('invalid event identity')
+    if not isinstance(e['t'], str) or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ', e['t']):
+        raise ValueError('invalid event timestamp')
+    datetime.strptime(e['t'], '%Y-%m-%dT%H:%M:%SZ')
+    event_validate(e['kind'], e['actor'], e['task'], e['data'], e['scope'])
+    # Sequence allocation depends on stored identity, never the current mask set.
+    if not masked:
+        return e
+    # Envelope keys are fixed schema, not supplied text; keep them stable for seq.
+    return {key: (event_data(e['kind'], value, False) if key == 'data' else
+                  event_value(value, writing=False)) for key, value in e.items()}
+
+
+def event_line(event: dict) -> str:
+    """The one serialization of an event, without its newline. The stored line, the final check and every output of
+    add, list and check use this text. ensure_ascii keeps U+2028 and U+2029 out of the file as raw characters."""
+    if any(mask(key) != key for key in event):
+        raise ValueError("event envelope key contains a registered secret value")
+    return json_text(event)
+
+
+def event_text_problem(line: str) -> str | None:
+    """The final-line boundary: the serialized line must come out of mask(), secret_in() and token_like() unchanged.
+    A masked line would not be valid JSON, so such an event is refused, not masked."""
+    if mask(line) != line or secret_in(line) or token_like(line):
+        return 'the event holds a registered secret value or a key shape once serialized; nothing was written'
+    return None
+
+
+def event_read(path: Path) -> tuple[list[dict], int]:
+    """Read every record independently: a broken line cannot hide later events. A record counts only if the line
+    list prints for it passes the final check, so list and check agree on what is malformed."""
+    events, bad = [], 0
+    with path.open('rb') as handle:
+        for raw in handle:
+            try:
+                if not EVENT_ORIGIN.fullmatch(path.stem):
+                    raise ValueError('invalid origin filename')
+                event = event_parse(raw, path.stem)
+                if event_text_problem(event_line(event)):
+                    raise ValueError('event cannot be shown unmasked as JSON')
+                events.append(event)
+            except (ValueError, TypeError, RecursionError, UnicodeError):
+                bad += 1
+    return events, bad
+
+
+def event_append(kind, actor, task, data, scope='local') -> dict:
+    """Append one validated event under the installation lock; return its envelope."""
+    try:
+        import fcntl
+    except ImportError:
+        die('event add requires POSIX fcntl.flock (Linux, macOS or WSL)')
+    try:
+        event_validate(kind, actor, task, data, scope)
+        for value in (kind, actor, task, scope):
+            event_value(value)
+            if mask(value) != value:
+                raise ValueError('event identity contains a registered secret value')
+        data = event_data(kind, data)
+        # Masking an allowlisted key must not create an unreadable own record.
+        event_validate(kind, actor, task, data, scope)
+    except (ValueError, RecursionError):
+        die('invalid event: check kind, actor, task, scope, data keys and string limits')
+    directory = events_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / '.lock').open('a+b') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        origin_path = directory / 'ORIGIN'
+        if origin_path.exists():
+            try:
+                raw = origin_path.read_bytes()
+                origin = raw.decode('ascii').removesuffix('\n')
+            except (OSError, ValueError, UnicodeError):
+                die('invalid events ORIGIN file')
+            if not EVENT_ORIGIN.fullmatch(origin):
+                die('invalid events ORIGIN file')
+        else:
+            origin = secrets.token_hex(6)
+            if mask(origin) != origin:
+                die('generated event origin conflicts with a registered secret')
+            # Creation is serialized by .lock; fchmod makes the contract independent of umask.
+            fd = os.open(origin_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            with os.fdopen(fd, 'w', encoding='ascii') as handle:
+                os.fchmod(handle.fileno(), 0o644)
+                put(handle, origin + '\n')
+                handle.flush()
+                os.fsync(handle.fileno())
+        if mask(origin) != origin:
+            die('event origin conflicts with a registered secret')
+        path = directory / f'{origin}.jsonl'
+        seq = 1
+        if path.exists():
+            with path.open('rb') as handle:
+                handle.seek(0, os.SEEK_END)
+                end = handle.tell()
+                if end:
+                    handle.seek(end - 1)
+                    if handle.read(1) != b'\n':
+                        die('local event file has a torn tail; repair before appending')
+                # Look backwards in bounded chunks, parsing only the last valid own
+                # event. Normal append cost does not grow with the event history.
+                pending = b''
+                found = False
+                while end and not found:
+                    start = max(0, end - 4096)
+                    handle.seek(start)
+                    chunk = handle.read(end - start) + pending
+                    lines = chunk.split(b'\n')
+                    pending = lines[0]
+                    complete = lines[1:]
+                    if start == 0:
+                        complete.insert(0, pending)
+                    for raw in reversed(complete):
+                        if not raw:
+                            continue
+                        try:
+                            previous = event_parse(raw + b'\n', origin, masked=False)
+                        except (ValueError, TypeError, RecursionError, UnicodeError):
+                            continue
+                        seq = previous['seq'] + 1
+                        found = True
+                        break
+                    end = start
+        event = {'v': 1, 'id': f'{origin}-{seq}', 'seq': seq,
+                 't': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                 'origin': origin, 'actor': actor, 'kind': kind, 'task': task,
+                 'scope': scope, 'data': data}
+        try:
+            line = event_line(event)
+        except ValueError:
+            die("event JSON refused by the secret check")
+        problem = event_text_problem(line)
+        if problem:
+            die(problem)
+        if len((line + '\n').encode('utf-8')) > 4096:
+            die('event exceeds 4096 bytes')
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            # put's fd path uses one syscall to preserve the record boundary.
+            put(fd, line + '\n')
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    return event
+
+
+def cmd_event(args: list[str]) -> None:
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    # argparse must not bypass the shared, masked output sinks.
+    parser.error = lambda message: die('invalid event arguments (see: log help)')
+    parser.add_argument('action', choices=('add', 'list', 'check'))
+    action = args[0] if args else ''
+    if action == 'add':
+        parser.add_argument('kind')
+        parser.add_argument('--actor', required=True)
+        parser.add_argument('--task', default='')
+        parser.add_argument('--scope', default='local', choices=('local', 'link'))
+        parser.add_argument('--data', required=True)
+    elif action == 'list':
+        parser.add_argument('--since', type=int, default=0)
+        parser.add_argument('--origin')
+        parser.add_argument('--kind')
+        parser.add_argument('--task')
+    opts = parser.parse_args(args)
+    if action == 'add':
+        try:
+            data = json.loads(opts.data, object_pairs_hook=event_pairs)
+        except (ValueError, RecursionError):
+            die('event --data must be valid JSON with unique keys')
+        say(event_line(event_append(opts.kind, opts.actor, opts.task, data, opts.scope)))
+    else:
+        bad_total = 0
+        for path in sorted(events_dir().glob('*.jsonl')):
+            events, bad = event_read(path)
+            bad_total += bad
+            if action == 'check':
+                say(f'{path.name}: {bad}')
+            else:
+                for event in events:
+                    if (event['seq'] > opts.since and
+                            (opts.origin is None or event['origin'] == opts.origin) and
+                            (opts.kind is None or event['kind'] == opts.kind) and
+                            (opts.task is None or event['task'] == opts.task)):
+                        say(event_line(event))
+        if action == 'check' and bad_total:
+            raise SystemExit(1)
+
+
+# State rows are disposable projections. Only validated, recursively masked values enter SQLite.
+STATE_FORMAT = 'state-v4-lessons'
+STATE_COLUMNS = {
+    'lessons': 'id task title body topic source status updated',
+    'tasks': 'id title class owner state next_gate blocked_reason artifacts updated phase',
+    'questions': 'id task text from_bot status updated qid',
+    'decisions': 'id task number title text options why risk authority next updated status decided_by note',
+    # Merge proposals and marks are run rows: bot is the actor, outcome is proposed or marked, head and branch name
+    # the change. No separate table, so every projected table keeps its own rows.
+    'runs': 'id task bot runner tier model effort outcome verdict ref tokens signal cost updated head branch',
+    'flows': 'id task kind status until updated',
+    'schedule': 'id task title when status owner action updated kind ending last_run',
+    'claims': 'id task owner paths until status updated',
+    'handoffs': 'id task from_bot to_bot text artifacts outcome status updated',
+    'phases': 'id task phase state reason updated',
+    'dag_edges': 'id from to kind updated',
+}
+
+
+def project_event(e: dict) -> list[tuple[str, dict]]:
+    """Pure per-kind projection: return partial upserts; never mutate the envelope."""
+    kind, d = e['kind'], dict(e['data'])
+    row = {'id': e['id'], 'task': e['task'], 'updated': e['t']}
+    table = None
+    if kind in ('task.created', 'task.state'):
+        table = 'tasks'
+        row = {'id': e['task'], 'updated': e['t']}
+    elif kind.startswith('question.'):
+        table = 'questions'
+        row.update(id=e['task'] + ':' + str(d.get('from', e['actor'])),
+                   status='answered' if kind.endswith('answered') else 'open')
+        d['from_bot'] = d.pop('from', e['actor'])
+        # The question's own Q-<n> id is a column; id stays the task-and-bot key.
+        if 'id' in d:
+            d['qid'] = d.pop('id')
+    elif kind == 'decision.recorded':
+        table = 'decisions'
+        row['id'] = str(d.get('number', e['id']))
+        row['text'] = ' '.join(str(d.get(k, '')) for k in ('title', 'why', 'next'))
+    elif kind.startswith('lesson.'):
+        table = 'lessons'
+        row.update(id=d.pop('id', 'L-' + e['id']),
+                   status='accepted' if kind.endswith('accepted') else 'proposed')
+    elif kind.startswith('run.'):
+        table = 'runs'
+    elif kind in ('merge.proposed', 'merge.marked'):
+        table = 'runs'
+        row.update(bot=e['actor'], outcome=kind.split('.')[1])
+    elif kind == 'flow.step':
+        table = 'flows'
+        row['id'] = e['task']
+    elif kind == 'schedule.item':
+        table = 'schedule'
+    elif kind in ('claim.set', 'claim.released'):
+        table = 'claims'
+        row['status'] = 'released' if kind.endswith('released') else 'open'
+    elif kind.startswith('handoff.'):
+        table = 'handoffs'
+        row['status'] = 'done' if kind.endswith('done') else 'open'
+        for source, target in (('from', 'from_bot'), ('to', 'to_bot')):
+            if source in d:
+                d[target] = d.pop(source)
+    elif kind == 'phase.state':
+        table = 'phases'
+        row['id'] = e['task'] + ':' + str(d.get('phase', ''))
+    elif kind == 'dag.edge':
+        table = 'dag_edges'
+        row.pop('task')
+        if d.get('relation') not in ('depends_on', 'path_conflict'):
+            raise ValueError('invalid edge kind')
+        row['id'] = json_text([d.get('from'), d.get('to'), d['relation']])
+        d['kind'] = d.pop('relation')
+    if table is None:
+        return []
+    row.update({k: v for k, v in d.items() if k in STATE_COLUMNS[table].split()})
+    return [(table, row)]
+
+
+def state_masked(value):
+    """The value with every string masked, recursively, before any serialization: JSON escaping must not hide a
+    registered value from mask()."""
+    if isinstance(value, str):
+        return mask(value)
+    if isinstance(value, dict):
+        return {state_masked(k): state_masked(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [state_masked(v) for v in value]
+    return value
+
+
+def safe_json(obj) -> str | None:
+    """Mask raw strings, serialize once, and refuse unsafe serialized JSON."""
+    text = json.dumps(state_masked(obj), ensure_ascii=True, separators=(',', ':'), allow_nan=False)
+    if mask(text) != text or secret_in(text) or token_like(text):
+        return None
+    return text
+
+
+def json_text(obj) -> str:
+    """Require safe JSON for a stored value; callers refuse or skip on failure."""
+    text = safe_json(obj)
+    if text is None:
+        raise ValueError('JSON contains a registered secret value once serialized')
+    return text
+
+
+def say_json(obj) -> None:
+    """Emit safe JSON, or a safe JSON null when the requested representation is refused."""
+    text = safe_json(obj)
+    if text is None:
+        text = safe_json(None)
+    if text is None:
+        die('JSON output refused by the secret check')
+    say(text)
+
+
+def state_text(value) -> str | None:
+    """The text a row keeps for value. The serialized text must come out of mask(), secret_in() and token_like()
+    unchanged; otherwise ValueError, and the row is skipped and counted."""
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        text = json_text(value)
+    else:
+        text = str(state_masked(value))
+    if mask(text) != text or secret_in(text) or token_like(text):
+        raise ValueError('row holds a secret value or key shape once serialized')
+    return text
+
+
+def state_upsert(db, table, row):
+    values = {k: state_text(v) for k, v in row.items()}
+    columns = ','.join('"' + k + '"' for k in values)
+    updates = ','.join('"' + k + '"=excluded."' + k + '"' for k in values if k != 'id')
+    db.execute(f'INSERT INTO {table} ({columns}) VALUES ({",".join("?" for _ in values)}) '
+               f'ON CONFLICT(id) DO UPDATE SET {updates}', list(values.values()))
+    if table in ('tasks', 'decisions'):
+        try:
+            db.execute(f'DELETE FROM {table}_fts WHERE id=?', (values['id'],))
+            field = 'title' if table == 'tasks' else 'text'
+            db.execute(f'INSERT INTO {table}_fts SELECT id,{field} FROM {table} WHERE id=?', (values['id'],))
+        except sqlite3.OperationalError as error:
+            if 'no such table' not in str(error):
+                raise
+
+
+def state_path():
+    return Path(os.environ.get('WOUF_STATE_DB') or log_dir().parent / 'env' / 'state.sqlite')
+
+
+def state_connect(path):
+    if str(path) != ':memory:':
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+    db = sqlite3.connect(str(path), timeout=30)
+    db.execute('PRAGMA busy_timeout=30000')
+    db.execute('PRAGMA secure_delete=ON')
+    db.execute('PRAGMA journal_mode=WAL')
+    return db
+
+
+def state_remove(path):
+    for suffix in ('', '-wal', '-shm'):
+        path.with_name(path.name + suffix).unlink(missing_ok=True)
+
+
+def state_db(rebuild=False):
+    """Refresh under a host lock. Append-only extensions apply only new lines;
+    replacement, truncation, changed prefixes, masks or format remove and rebuild the cache.
+    Source names are hashes; a prefix digest detects edits even when size and mtime are preserved.
+    """
+    import fcntl
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path.with_name(path.name + '.lock'), os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, 'a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return state_refresh(path, rebuild)
+
+
+def state_refresh(path, rebuild):
+    masks = cache_hash(repr([STATE_FORMAT, sorted(set(REGISTERED)),
+        MASK, [(k, p.pattern, p.flags) for k, p in SECRET_PATTERNS]]).encode())
+    sources = [(p, True) for p in sorted(events_dir().glob('*.jsonl'))]
+    sources += [(p, False) for p in log_files()]
+    snapshots = []
+    for p, event in sources:
+        raw = p.read_bytes()
+        st = p.stat()
+        snapshots.append((cache_hash(str(p).encode()), p, event, raw, st.st_mtime_ns))
+    db, old = None, {}
+    corruption = False
+    if not PASSED and path.exists() and not rebuild:
+        try:
+            db = state_connect(path)
+            if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise sqlite3.DatabaseError('state integrity')
+            for table, columns in STATE_COLUMNS.items():
+                if [r[1] for r in db.execute(f'PRAGMA table_info({table})')] != columns.split():
+                    raise sqlite3.DatabaseError('state schema')
+            meta = dict(db.execute('SELECT k,v FROM meta'))
+            old = json.loads(meta.get('sources', '{}'))
+            rebuild = meta.get('mask_hash') != masks
+            if set(old) - {s[0] for s in snapshots}:
+                rebuild = True
+            for position, (key, _, event_source, raw, mtime) in enumerate(snapshots):
+                # Event sources replay in name order and may share rows (tasks, claims...): a new line in, or a new
+                # source before, an event source that is already applied rebuilds. Receipt rows never share rows
+                # with events or with each other, so receipts never force a rebuild.
+                applied_after = event_source and any(item[0] in old for item in snapshots[position + 1:] if item[2])
+                if key not in old and applied_after:
+                    rebuild = True
+                if key in old:
+                    size, previous_time, digest = old[key]
+                    if len(raw) > size and applied_after:
+                        rebuild = True
+                    if len(raw) > size and size and raw[size - 1:size] != b'\n':
+                        rebuild = True
+                    if (len(raw) < size or cache_hash(raw[:size]) != digest or
+                            (len(raw) == size and mtime != previous_time)):
+                        rebuild = True
+        except (sqlite3.Error, ValueError, TypeError):
+            corruption, rebuild = True, True
+    if PASSED or rebuild or db is None:
+        if db is not None:
+            db.close()
+        state_remove(path)
+        db = state_connect(':memory:' if PASSED else path)
+        old = {}
+        db.execute('CREATE TABLE meta(k TEXT PRIMARY KEY,v TEXT)')
+        for table, columns in STATE_COLUMNS.items():
+            db.execute(f'CREATE TABLE {table} (' + ','.join('"' + c + '" TEXT' + (' PRIMARY KEY' if c == 'id' else '') for c in columns.split()) + ')')
+        db.execute("CREATE UNIQUE INDEX claims_open ON claims(task) WHERE status != 'released'")
+        for table, field in (('tasks', 'title'), ('decisions', 'text')):
+            try:
+                db.execute(f'CREATE VIRTUAL TABLE {table}_fts USING fts5(id UNINDEXED,{field})')
+            except sqlite3.OperationalError:
+                pass
+    meta = dict(db.execute('SELECT k,v FROM meta'))
+    bad = int(meta.get('skipped', '0'))
+    seqs = json.loads(meta.get('seqs', '{}'))
+    new = {}
+    if not db.in_transaction:
+        db.execute('BEGIN')
+    for key, p, event_source, raw, mtime in snapshots:
+        offset = old.get(key, [0])[0]
+        line_offset = offset
+        for line in raw[offset:].splitlines(keepends=True):
+            receipt_id = key + ':' + str(line_offset)
+            line_offset += len(line)
+            try:
+                if event_source:
+                    if not EVENT_ORIGIN.fullmatch(p.stem):
+                        raise ValueError('invalid origin filename')
+                    # Validate stored identity, then mask every envelope value too:
+                    # a rotated key can have named an origin before registration.
+                    e = event_parse(line, p.stem)
+                    changes = project_event(e)
+                    if e['seq'] <= seqs.get(e['origin'], 0):
+                        raise ValueError('non-increasing sequence')
+                    seqs[e['origin']] = e['seq']
+                else:
+                    if not line.endswith(b'\n'):
+                        raise ValueError('torn receipt')
+                    r = json.loads(line)
+                    if not isinstance(r, dict) or r.get('outcome') not in OUTCOMES:
+                        raise ValueError('invalid receipt')
+                    if p.parent.parent.parent.name == 'env' and r.get('who') != p.stem:
+                        raise ValueError('receipt owner')
+                    changes = [('runs', dict(id=receipt_id, task=r.get('task', ''),
+                        bot=r.get('who', ''), updated=r.get('t', ''),
+                        **{k: r.get(k, '') for k in ('outcome', 'signal', 'ref', 'cost')}))]
+                db.execute('SAVEPOINT event_row')
+                try:
+                    for table, row in changes:
+                        state_upsert(db, table, row)
+                except (sqlite3.IntegrityError, ValueError, TypeError):
+                    db.execute('ROLLBACK TO event_row')
+                    raise ValueError('invalid projection')
+                finally:
+                    db.execute('RELEASE event_row')
+            except (ValueError, TypeError, RecursionError, UnicodeError):
+                bad += 1
+        new[key] = [len(raw), mtime, cache_hash(raw)]
+    stamp = cache_hash(repr([STATE_FORMAT, masks, new]).encode())
+    metadata = {'stamp': stamp, 'mask_hash': masks, 'sources': json_text(new),
+                'seqs': json_text(seqs), 'skipped': str(bad), 'corruption': str(int(corruption)),
+                'max_seq': str(max(seqs.values(), default=0))}
+    for origin, seq in seqs.items():
+        metadata['seq:' + origin] = str(seq)
+    # Avoid a write transaction on warm reads: data_version is the bus.
+    for k, v in metadata.items():
+        if meta.get(k) != v:
+            db.execute('INSERT OR REPLACE INTO meta VALUES (?,?)', (k, v))
+    db.commit()
+    return db
+
+
+def cmd_state(args):
+    import argparse
+    import time
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.error = lambda message: die('invalid state arguments (see: log help)')
+    parser.add_argument('action', choices=('rebuild', 'check', 'get', 'wait'))
+    parser.add_argument('table', nargs='?', choices=('tasks', 'questions', 'decisions', 'schedule', 'claims'))
+    parser.add_argument('--task')
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--since', type=int, default=0)
+    parser.add_argument('--timeout', type=float, default=30)
+    opts = parser.parse_args(args)
+    db = state_db(rebuild=opts.action == 'rebuild')
+    try:
+        if opts.action == 'get':
+            if not opts.table:
+                die('state get requires a table')
+            sql, params = f'SELECT * FROM {opts.table}', []
+            if opts.task:
+                sql += ' WHERE ' + ('id' if opts.table == 'tasks' else 'task') + '=?'
+                params.append(opts.task)
+            cursor = db.execute(sql + ' ORDER BY id', params)
+            rows = [dict(zip([c[0] for c in cursor.description], row)) for row in cursor]
+            if opts.json:
+                say_json(rows)
+            else:
+                for row in rows:
+                    say_json(row)
+        elif opts.action == 'wait':
+            deadline = time.monotonic() + max(0, opts.timeout)
+            version = db.execute('PRAGMA data_version').fetchone()[0]
+            inode = None if PASSED else state_path().stat().st_ino
+            stamp = db.execute("SELECT v FROM meta WHERE k='stamp'").fetchone()[0]
+            while True:
+                seq = int(db.execute("SELECT v FROM meta WHERE k='max_seq'").fetchone()[0])
+                current = db.execute('PRAGMA data_version').fetchone()[0]
+                if seq > opts.since or current != version or time.monotonic() >= deadline:
+                    say(str(seq))
+                    break
+                time.sleep(min(.1, max(0, deadline - time.monotonic())))
+                refreshed = state_db()
+                next_stamp = refreshed.execute("SELECT v FROM meta WHERE k='stamp'").fetchone()[0]
+                next_seq = refreshed.execute("SELECT v FROM meta WHERE k='max_seq'").fetchone()[0]
+                refreshed.close()
+                if next_stamp != stamp:
+                    say(next_seq)
+                    break
+                # Rebuilds replace the inode; re-open so an old WAL never hides a new cache.
+                if PASSED or state_path().stat().st_ino != inode:
+                    db.close()
+                    db = state_db()
+                    inode = None if PASSED else state_path().stat().st_ino
+        else:
+            meta = dict(db.execute('SELECT k,v FROM meta'))
+            say_json({k: meta[k] for k in ('skipped', 'seqs', 'corruption', 'max_seq')})
+            if opts.action == 'check' and (int(meta['skipped']) or int(meta['corruption'])):
+                raise SystemExit(1)
+    finally:
+        db.close()
+
+
+def index() -> sqlite3.Connection:
+    directory = log_dir()
+    # Canonical sets: iteration order (including equal-length values) must not cool a warm cache.
+    # Include the masking format so changes to shapes or their replacement invalidate cached rows too.
+    mask_hash = cache_hash(repr([
+        "masked3-hmac", sorted(set(STORED)), sorted(set(PASSED)), MASK, FIELDS,
+        [(kind, pattern.pattern, pattern.flags) for kind, pattern in SECRET_PATTERNS],
+    ]).encode())
+    # A cache on disk only holds what the store and the shapes mask. Keys passed for one run are not in the store,
+    # so with them the index lives in memory, and an index file left by an earlier run is removed.
+    if PASSED:
+        for stale in directory.glob(".index.sqlite*"):
+            stale.unlink(missing_ok=True)
+        db = sqlite3.connect(":memory:")
+        build(db, "", mask_hash)
+        return db
+    # The first part names how entries are read: an index built before this reading is built again. Sources are
+    # named by a hash of their path, never by the path (a receipt file may be named like a key).
+    stamp = ("masked3-hmac;" + ";".join(
+        f"{cache_hash(str(p).encode())[:16]}:{p.stat().st_size}:{p.stat().st_mtime_ns}"
+        for p in log_files()) + f";{len(STORED)}:{cache_hash(str(store_state()).encode())[:16]}"
+        # The hash of the values loaded now, not only of the store's names: a rotated value changes it.
+        f":{cache_hash(repr(sorted(set(REGISTERED))).encode())[:16]}")
+    path = directory / ".index.sqlite"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+    row = db.execute("SELECT v FROM meta WHERE k = 'stamp'").fetchone()
+    masks = db.execute("SELECT v FROM meta WHERE k = 'mask_hash'").fetchone()
+    if row and row[0] == stamp:
+        if masks and masks[0] == mask_hash:
+            return db
+        # A cache predating the mask metadata gets one safety scan before it can stay warm.
+        # A known, changed hash always rebuilds, even if none of its values occur in the rows.
+        if masks is None and not masked_out(db):
+            db.execute("INSERT INTO meta VALUES ('mask_hash', ?)", (mask_hash,))
+            db.commit()
+            return db
+    # Stale: a value registered since the rows were written (a rotated value in a store the stamp does not see)
+    # would stay in them. The file is removed, not emptied, so no old row stays in its free pages.
+    db.close()
+    path.unlink(missing_ok=True)
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA secure_delete = ON")
+    build(db, stamp, mask_hash)
+    return db
+
+
+def masked_out(db: sqlite3.Connection) -> bool:
+    """Whether a cached row holds a value the registered set now masks: the index must be built again."""
+    try:
+        rows = db.execute("SELECT t, who, task, outcome, signal, ref, cost FROM log").fetchall()
+    except sqlite3.Error:
+        return True
+    return any(isinstance(v, str) and mask(v) != v for row in rows for v in row)
+
+
+def store_state() -> tuple:
+    """When the store last changed (size and time of each entry), so a secret stored after the index was built, or
+    changed since, builds it again."""
+    try:
+        folder = Path(os.environ.get("WOUF_SECRET_DIR") or os.path.join(
+            os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "wouf", "secrets"))
+        return tuple((p.name, p.stat().st_size, p.stat().st_mtime_ns) for p in sorted(folder.expanduser().iterdir()))
+    except OSError:
+        return ()
+
+
+def build(db: sqlite3.Connection, stamp: str, mask_hash: str) -> None:
+    db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+    db.execute("DROP TABLE IF EXISTS log")
+    try:
+        db.execute("CREATE VIRTUAL TABLE log USING fts5(t UNINDEXED, who, task, outcome, signal, ref, cost UNINDEXED)")
+    except sqlite3.OperationalError:
+        db.execute("CREATE TABLE log (t, who, task, outcome, signal, ref, cost)")
+    db.executemany("INSERT INTO log VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   [(e.get("t"), e.get("who"), e.get("task"), e.get("outcome"), e.get("signal"), e.get("ref"),
+                     e.get("cost")) for e in entries()])
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('stamp', ?)", (stamp,))
+    db.execute("INSERT OR REPLACE INTO meta VALUES ('mask_hash', ?)", (mask_hash,))
+    db.commit()
+
+
+def cmd_find(args: list[str]) -> None:
+    member, limit, words = None, 20, []
+    it = iter(args)
+    for arg in it:
+        if arg == "--member":
+            member = next(it, None)
+        elif arg == "--limit":
+            # Checked here, not by int(): a bad value is shown masked, never in a traceback.
+            value = next(it, "")
+            if not (value.isascii() and value.isdigit()):
+                die("--limit takes a whole number")
+            limit = int(value)
+        else:
+            words.append(arg)
+    if not words:
+        die("usage: log find WORDS [--member ID] [--limit N]")
+    db = index()
+    fts = db.execute("SELECT sql FROM sqlite_master WHERE name = 'log'").fetchone()[0].upper().find("FTS5") >= 0
+    if fts:
+        query = " ".join('"' + w.replace('"', '""') + '"' for w in words)
+        sql, params = "SELECT t, who, task, outcome, signal, ref, cost FROM log WHERE log MATCH ?", [query]
+    else:
+        sql = "SELECT t, who, task, outcome, signal, ref, cost FROM log WHERE " + " AND ".join(
+            "(signal || ' ' || task || ' ' || ref) LIKE ?" for _ in words)
+        params = [f"%{w}%" for w in words]
+    if member:
+        sql += " AND who = ?"
+        params.append(member)
+    sql += " ORDER BY t DESC LIMIT ?"
+    params.append(limit)
+    keys = ("t", "who", "task", "outcome", "signal", "ref", "cost")
+    for row in db.execute(sql, params):
+        say(fmt(dict(zip(keys, row))))
+
+
+def pack_paragraphs(text, max_chars=1800):
+    """Blank-line paragraphs packed into chunks of at most max_chars; a longer paragraph is split."""
+    chunks, current = [], ''
+    for paragraph in re.split(r'\n\s*\n', text.strip()):
+        while paragraph:
+            if current and len(current) + 2 + len(paragraph) > max_chars:
+                chunks.append(current)
+                current = ''
+            if len(paragraph) > max_chars:
+                chunks.append(paragraph[:max_chars])
+                paragraph = paragraph[max_chars:]
+            else:
+                current = current + '\n\n' + paragraph if current else paragraph
+                break
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def chunk_plain(text):
+    """Listed text files: blank-line paragraphs under the same bound; no headings, so every chunk is (top)."""
+    return [('(top)', body) for body in pack_paragraphs(text)]
+
+
+def chunk_text(text, max_chars=1800):
+    """Heading paths, fenced code and bounded paragraph chunks; no external chunker."""
+    out, path, buf = [], [], []
+    fence = None
+
+    def flush():
+        out.extend((' > '.join(path) or '(top)', body) for body in pack_paragraphs('\n'.join(buf), max_chars))
+        buf.clear()
+
+    for line in text.splitlines():
+        marker = re.match(r'^ {0,3}(`{3,}|~{3,})(.*)$', line)
+        if marker:
+            run, tail = marker.groups()
+            if fence is None:
+                fence = (run[0], len(run))
+            elif run[0] == fence[0] and len(run) >= fence[1] and not tail.strip():
+                fence = None
+            buf.append(line)
+            continue
+        heading = None if fence else re.match(r'^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$', line)
+        if heading:
+            flush()
+            level = len(heading[1])
+            del path[level - 1:]
+            while len(path) < level - 1:
+                path.append('')
+            path.append(heading[2])
+        else:
+            buf.append(line)
+    flush()
+    return [(' > '.join(p for p in h.split(' > ') if p) or '(top)', b) for h, b in out]
+
+
+KNOWLEDGE_MAX_BYTES = 1 << 20
+
+
+def knowledge_read(path: Path, project: Path) -> str:
+    """The text of one knowledge file. ValueError names why it is skipped: outside the project, too large, not a
+    regular file, NUL bytes, or not UTF-8. Reads at most one byte past the cap, so a growing file cannot exhaust it."""
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(project)
+    except ValueError:
+        raise ValueError('it resolves outside the project; links are not followed out of it')
+    if not resolved.is_file():
+        raise ValueError('not a regular file')
+    with resolved.open('rb') as handle:
+        raw = handle.read(KNOWLEDGE_MAX_BYTES + 1)
+    if len(raw) > KNOWLEDGE_MAX_BYTES:
+        raise ValueError(f'larger than {KNOWLEDGE_MAX_BYTES} bytes')
+    if b'\x00' in raw:
+        raise ValueError('it contains NUL bytes')
+    try:
+        return raw.decode('utf-8')
+    except UnicodeError:
+        raise ValueError('it is not UTF-8 text')
+
+
+def knowledge_sources(shared=False):
+    """Team Markdown, and in a host index the configured local files: Markdown in a listed folder, any UTF-8 text
+    file listed by name. Containment is checked on resolved paths; a listed item that is skipped is named on stderr
+    with the reason. Shared snapshots read no configured source at all."""
+    import configparser
+    team = log_dir().parent.resolve()
+    project = team.parent.parent
+    roots = [(team / 'knowledge', True, 'knowledge')]
+    if not shared:
+        config = configparser.ConfigParser(interpolation=None)
+        config.read(team / 'config.ini', encoding='utf-8')
+        for name in re.split(r'[,\n]', config.get('knowledge', 'sources', fallback='')):
+            name = name.strip()
+            if '://' in name:
+                say(f'log: knowledge source {name} skipped: URLs are not ingested', err=True)
+            elif name:
+                roots.append((project / name, False, name))
+    found = {}
+    for root, knowledge, name in roots:
+        try:
+            root.resolve().relative_to(project)
+        except (OSError, ValueError):
+            if not knowledge:
+                say(f'log: knowledge source {name} skipped: it resolves outside the project', err=True)
+            continue
+        if root.is_dir():
+            candidates = sorted(root.rglob('*.md'))
+        elif root.is_file() or knowledge:
+            candidates = [root] if root.is_file() else []
+        else:
+            say(f'log: knowledge source {name} skipped: not a regular file or folder', err=True)
+            continue
+        for p in candidates:
+            try:
+                text = knowledge_read(p, project)
+            except (OSError, ValueError) as error:
+                if p == root and not knowledge:
+                    say(f'log: knowledge source {name} skipped: {error}', err=True)
+                continue
+            resolved = p.resolve()
+            label = ('knowledge/' + p.relative_to(team / 'knowledge').as_posix()
+                     if knowledge else resolved.relative_to(project).as_posix())
+            key = cache_hash(str(resolved).encode())
+            found[key] = ('docs', label, text, p.suffix.lower() != '.md')
+    if not shared:
+        db = state_db()
+        try:
+            for table, kind in (('decisions', 'decisions'), ('lessons', 'lessons')):
+                cursor = db.execute('SELECT * FROM ' + table)
+                for values in cursor:
+                    row = dict(zip([c[0] for c in cursor.description], values))
+                    if table == 'lessons' and row['status'] != 'accepted':
+                        continue
+                    citation = (row['id'] if table == 'lessons' else
+                                'D-' + str(row['number'] or row['id']).removeprefix('D-'))
+                    fields = ('title', 'body') if table == 'lessons' else ('title', 'why', 'risk', 'authority', 'next', 'note')
+                    text = '\n\n'.join(str(row[k]) for k in fields if row[k])
+                    key = cache_hash((kind + ':' + row['id']).encode())
+                    found[key] = (kind, citation, text, False)
+        finally:
+            db.close()
+    return found
+
+
+KNOWLEDGE_TABLES = ('docs', 'decisions', 'lessons')
+
+
+def knowledge_path() -> Path:
+    return Path(os.environ.get('WOUF_KNOWLEDGE_DB') or log_dir().parent / 'env' / 'knowledge.sqlite')
+
+
+@contextlib.contextmanager
+def knowledge_lock(path: Path, remove: bool = False):
+    """An exclusive flock on path.lock; remove=True deletes that lock file once the work is done."""
+    import fcntl
+    lock_path = path.with_name(path.name + '.lock')
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(fd, 'a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if remove:
+                lock_path.unlink(missing_ok=True)
+
+
+def knowledge_db():
+    """Refresh a host cache, or read a staged override without changing it. Run keys keep queries in memory;
+    staged text is masked at output, so a snapshot is never rewritten when the run's masks change."""
+    path = knowledge_path()
+    if os.environ.get('WOUF_KNOWLEDGE_DB'):
+        # Staged snapshots are complete, checkpointed inputs; immutable avoids sidecar writes as well.
+        source = sqlite3.connect(path.resolve().as_uri() + '?mode=ro&immutable=1', uri=True, timeout=30)
+        if not PASSED:
+            return source
+        db = state_connect(':memory:')
+        try:
+            source.backup(db)
+        finally:
+            source.close()
+        return db
+    if PASSED:
+        return knowledge_refresh(state_connect(':memory:'), False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with knowledge_lock(path):
+        return knowledge_refresh(state_connect(path), False)
+
+
+def knowledge_build(out: Path) -> None:
+    """Write the knowledge-only snapshot to out. It is built beside out and renamed into place, so a reader sees the
+    old file or the new one, never a part; the mode is 0644 because sandboxes read it, and the lock file is removed."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with knowledge_lock(out, remove=True):
+        tmp = out.with_name(f'.{out.name}.{secrets.token_hex(8)}.tmp')
+        try:
+            db = state_connect(tmp)
+            try:
+                knowledge_refresh(db, True)
+                db.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            finally:
+                db.close()
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, out)
+        finally:
+            state_remove(tmp)
+
+
+def knowledge_text(text: str) -> str | None:
+    """The masked text when mask(), secret_in() and token_like() leave it unchanged; None when it still looks like a
+    key. Every stored chunk, heading, citation and printed snippet passes through here; a None is refused, not kept."""
+    masked = mask(text)
+    if mask(masked) != masked or secret_in(masked) or token_like(masked):
+        return None
+    return masked
+
+
+def knowledge_kept(rows):
+    """Rows whose every text value passes knowledge_text, masked; a row that still looks like a key is dropped."""
+    for row in rows:
+        values = [knowledge_text(v) for v in row]
+        if None not in values:
+            yield values
+
+
+def knowledge_prune(db):
+    """Keep references and chunks paired: a reference without its chunk, or a chunk without a reference, is dropped."""
+    db.execute('DELETE FROM refs WHERE hash NOT IN (SELECT hash FROM chunks)')
+    db.execute('DELETE FROM chunks WHERE hash NOT IN (SELECT hash FROM refs)')
+
+
+def knowledge_refresh(db, build_shared):
+    """Refresh changed host sources, or build a knowledge-only snapshot with the current masks."""
+    db.execute('CREATE TABLE IF NOT EXISTS knowledge_meta(k TEXT PRIMARY KEY,v TEXT)')
+    meta = dict(db.execute('SELECT k,v FROM knowledge_meta'))
+    mask_hash = cache_hash(repr(["knowledge-v2-hmac", sorted(set(REGISTERED)), MASK,
+        [(k, p.pattern) for k, p in SECRET_PATTERNS]]).encode())
+    if meta.get('shared') == '1' and not build_shared:
+        return db
+    db.execute('CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, digest TEXT)')
+    db.execute('CREATE TABLE IF NOT EXISTS chunks(hash TEXT PRIMARY KEY,body TEXT)')
+    db.execute('CREATE TABLE IF NOT EXISTS refs(source TEXT,hash TEXT,kind TEXT,heading TEXT,citation TEXT, PRIMARY KEY(source,hash))')
+    db.execute('CREATE TABLE IF NOT EXISTS refused(source TEXT PRIMARY KEY, n INTEGER)')
+    snapshots = knowledge_sources(shared=bool(build_shared))
+    with db:
+        if meta.get('mask') != mask_hash or build_shared:
+            db.execute('DELETE FROM sources')
+            db.execute('DELETE FROM refs')
+            db.execute('DELETE FROM chunks')
+            db.execute('DELETE FROM refused')
+        old = dict(db.execute('SELECT id,digest FROM sources'))
+        changed = bool(build_shared) or meta.get('mask') != mask_hash
+        for key in set(old) - set(snapshots):
+            db.execute('DELETE FROM sources WHERE id=?', (key,))
+            db.execute('DELETE FROM refs WHERE source=?', (key,))
+            db.execute('DELETE FROM refused WHERE source=?', (key,))
+            changed = True
+        for key, (kind, label, text, plain) in snapshots.items():
+            digest = cache_hash(repr([kind, label, text]).encode())
+            if old.get(key) == digest:
+                continue
+            changed = True
+            db.execute('DELETE FROM refs WHERE source=?', (key,))
+            refused = 0
+            for heading, body in (chunk_plain if plain else chunk_text)(mask(text)):
+                # Every stored value passes the final check; a chunk that still looks like a key is refused and counted.
+                stored = knowledge_text(body)
+                title = knowledge_text(heading)
+                citation = knowledge_text(label + ' § ' + heading if kind == 'docs' else label)
+                if None in (stored, title, citation):
+                    refused += 1
+                    continue
+                chunk_hash = cache_hash(stored.encode())
+                db.execute('INSERT OR IGNORE INTO chunks VALUES (?,?)', (chunk_hash, stored))
+                db.execute('INSERT OR IGNORE INTO refs VALUES (?,?,?,?,?)',
+                           (key, chunk_hash, kind, title, citation))
+            db.execute('INSERT OR REPLACE INTO refused VALUES (?,?)', (key, refused))
+            db.execute('INSERT OR REPLACE INTO sources VALUES (?,?)', (key, digest))
+        db.execute('DELETE FROM chunks WHERE hash NOT IN (SELECT hash FROM refs)')
+        if changed or not meta:
+            knowledge_fts(db)
+        db.execute("INSERT OR REPLACE INTO knowledge_meta VALUES ('mask',?)", (mask_hash,))
+        db.execute("INSERT OR REPLACE INTO knowledge_meta VALUES ('shared',?)", ('1' if build_shared else '0',))
+    if changed:
+        refused_total = db.execute('SELECT coalesce(sum(n),0) FROM refused').fetchone()[0]
+        if refused_total:
+            say(f'log: knowledge: {refused_total} chunk(s) refused by the secret check; they are not indexed', err=True)
+    return db
+
+
+def knowledge_fts(db):
+    for table in KNOWLEDGE_TABLES:
+        db.execute(f'DROP TABLE IF EXISTS {table}_fts')
+        try:
+            db.execute(f'CREATE VIRTUAL TABLE {table}_fts USING fts5(hash UNINDEXED,heading,body)')
+        except sqlite3.OperationalError as error:
+            if 'no such module' in str(error):
+                die('knowledge search requires SQLite FTS5 support')
+            raise
+        db.execute(f'INSERT INTO {table}_fts SELECT c.hash,min(r.heading),c.body FROM chunks c '
+                   'JOIN refs r ON r.hash=c.hash WHERE r.kind=? GROUP BY c.hash', (table,))
+
+
+def cmd_ask(args):
+    import argparse
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.error = lambda message: die('invalid ask arguments (see: log help)')
+    parser.add_argument('words', nargs='*')
+    parser.add_argument('-k', type=int, default=5)
+    parser.add_argument('--json', action='store_true')
+    parser.add_argument('--build-shared')
+    opts = parser.parse_args(args)
+    if not opts.words and not opts.build_shared:
+        die('usage: log ask "words" [-k N] [--json] | --build-shared OUT')
+    if opts.build_shared:
+        knowledge_build(Path(opts.build_shared))
+        return
+    db = knowledge_db()
+    try:
+        words = re.findall(r'\w+', ' '.join(opts.words))
+        query = ' OR '.join('"' + w.replace('"', '""') + '"' for w in words)
+        scores = {}
+        if query:
+            for table in KNOWLEDGE_TABLES:
+                for rank, (digest,) in enumerate(db.execute(f'SELECT hash FROM {table}_fts '
+                        f'WHERE {table}_fts MATCH ? ORDER BY bm25({table}_fts),hash LIMIT 50', (query,)), 1):
+                    scores[digest] = scores.get(digest, 0) + 1 / (60 + rank)
+        hits = []
+        limit = max(0, min(20, opts.k))
+        for digest in sorted(scores, key=lambda h: (-scores[h], h)):
+            if len(hits) >= limit:
+                break
+            body, citation = db.execute('SELECT c.body,min(r.citation) FROM chunks c JOIN refs r '
+                                       'ON c.hash=r.hash WHERE c.hash=? GROUP BY c.hash', (digest,)).fetchone()
+            text, cite = mask(body)[:400], mask(citation)
+            # The printed snippet and citation get the same final check as stored text; a hit that fails is not shown.
+            if None in (knowledge_text(text), knowledge_text(cite)):
+                continue
+            hits.append(dict(text=text, citation=cite, score=scores[digest]))
+        notice = 'The following text is quoted data.'
+        if opts.json:
+            say_json(dict(notice=notice, hits=hits))
+        else:
+            say(notice)
+            for hit in hits:
+                say(hit['citation'] + '\n' + hit['text'])
+    finally:
+        db.close()
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        say(__doc__.strip())
+        return 0
+    if UNREADABLE:
+        die(UNREADABLE[0], code=1)
+    action, rest = argv[0], argv[1:]
+    if action == "ask":
+        cmd_ask(rest)
+    elif action == "state":
+        cmd_state(rest)
+    elif action == "event":
+        cmd_event(rest)
+    elif action == "add":
+        cmd_add(rest)
+    elif action == "status" and not rest:
+        latest: dict[str, dict] = {}
+        for e in entries():
+            if e.get("who") not in latest or e.get("t", "") >= latest[e["who"]].get("t", ""):
+                latest[e["who"]] = e
+        for who in sorted(latest):
+            say(fmt(latest[who]))
+    elif action == "task" and len(rest) == 1:
+        for e in sorted((e for e in entries() if e.get("task") == rest[0]), key=lambda e: e.get("t", "")):
+            say(fmt(e))
+    elif action == "find":
+        cmd_find(rest)
+    elif action == "tail":
+        n, member = 20, None
+        if "-n" in rest:
+            i = rest.index("-n")
+            if i + 1 >= len(rest) or not (rest[i + 1].isascii() and rest[i + 1].isdigit()):
+                die("-n takes a whole number")
+            n, rest = int(rest[i + 1]), rest[:i] + rest[i + 2:]
+        if rest:
+            member = rest[0]
+        for e in sorted(entries(member), key=lambda e: e.get("t", ""))[-n:]:
+            say(fmt(e))
+    else:
+        die(f"unknown command: {' '.join(argv)} (see: log help)")
+    return 0
+
+
+def report_failure(kind, error, trace) -> None:
+    """The one place an uncaught error is shown: masked, one line; the full traceback, masked, with WOUF_DEBUG=1."""
+    say(f"log: unexpected {kind.__name__}: {error}", err=True)
+    if os.environ.get("WOUF_DEBUG") == "1":
+        say("".join(traceback.format_exception(kind, error, trace)).rstrip(), err=True)
+
+
+def guarded(argv: list[str]) -> int:
+    try:
+        return main(argv)
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException as error:
+        report_failure(type(error), error, error.__traceback__)
+        return 1
+
+
+def hook(kind, error, trace) -> None:
+    if issubclass(kind, KeyboardInterrupt):
+        sys.__excepthook__(kind, error, trace)
+    else:
+        report_failure(kind, error, trace)
+
+
+sys.excepthook = hook
+
+if __name__ == "__main__":
+    sys.exit(guarded(sys.argv[1:]))

@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en" data-brand="wouf">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="__POLICY__">
+<meta name="referrer" content="no-referrer">
+<title>__TITLE__</title>
+<style>
+/* VAIEV UI v8, brand wouf, inlined: the tokens of static/v8/css/tokens.css, the light field, plane and plate.
+   This page loads nothing, so it uses the system's fonts. */
+:root{color-scheme:light;--shape-l:16px;--shape-xl:28px;--shape-full:9999px;--plate-alpha:0.94;--plate-blur:14px;
+--font-ui:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+--font-plex-mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+--error:oklch(0.50 0.17 25);--ok:oklch(0.47 0.10 150);--warn:oklch(0.52 0.11 70);--surface:oklch(0.96 0.004 270);
+--surface-container-low:oklch(0.98 0.003 270);--surface-container:oklch(0.995 0.002 270);
+--surface-container-high:oklch(1 0 0);--on-surface:oklch(0.20 0.012 270);--on-surface-variant:oklch(0.44 0.02 270);
+--outline-variant:oklch(0.20 0.012 270 / 0.12);--primary:oklch(0.47 0.18 268);--on-primary:oklch(0.99 0 0);
+--field-1:oklch(0.86 0.06 268 / 0.7);--field-2:oklch(0.90 0.04 200 / 0.6);--field-3:oklch(0.92 0.03 300 / 0.6);
+--indicator:oklch(0.47 0.18 268);--on-indicator:oklch(0.99 0 0)}
+*{box-sizing:border-box}html{background:var(--surface)}body{margin:0;color:var(--on-surface);
+font:400 15px/1.5 var(--font-ui);-webkit-font-smoothing:antialiased}
+.field{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none;background:var(--surface)}
+.field::before,.field::after{content:"";position:absolute;inset:-30%;
+background:radial-gradient(40% 35% at 18% 22%,var(--field-1),transparent 70%),
+radial-gradient(45% 40% at 85% 70%,var(--field-2),transparent 72%);animation:field-drift 46s ease-in-out infinite alternate}
+.field::after{background:radial-gradient(38% 34% at 70% 18%,var(--field-3),transparent 70%);animation-duration:61s;
+animation-direction:alternate-reverse}
+@keyframes field-drift{from{transform:translate3d(-3%,-2%,0) rotate(0deg) scale(1)}
+to{transform:translate3d(4%,3%,0) rotate(8deg) scale(1.08)}}
+@media (prefers-reduced-motion:reduce){.field::before,.field::after{animation:none}}
+.plane{background:var(--surface-container);color:var(--on-surface);border-radius:var(--shape-xl)}
+.plate{position:relative;isolation:isolate;background:linear-gradient(180deg,oklch(1 0 0 / 0.07),transparent 42%),
+color-mix(in oklch,var(--surface-container) calc(var(--plate-alpha) * 100%),transparent);
+-webkit-backdrop-filter:blur(var(--plate-blur)) saturate(1.2);backdrop-filter:blur(var(--plate-blur)) saturate(1.2);
+border-radius:var(--shape-xl);box-shadow:inset 0 1px 0 oklch(1 0 0 / 0.16),inset 0 0 0 1px oklch(1 0 0 / 0.05)}
+main{max-width:960px;margin:0 auto;padding:40px 16px 56px}
+h1{font:400 clamp(30px,2.5vw + 14px,44px)/1.15 var(--font-ui);letter-spacing:-0.02em;margin:12px 0 8px}
+h2{font:500 22px/1.3 var(--font-ui);margin:40px 0 12px}
+.muted{color:var(--on-surface-variant)}.objective{font-size:17px;margin:8px 0}ul.criteria{margin:8px 0;padding-left:20px}
+.head{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:24px}
+.stat{padding:16px 20px}.stat b{display:block;font:500 22px/1.2 var(--font-ui);font-variant-numeric:tabular-nums}
+.stat span{font:500 12px/1.3 var(--font-ui);color:var(--on-surface-variant)}
+.box{padding:8px 20px}
+ol.time{list-style:none;margin:0;padding:12px 20px 12px 28px}
+ol.time li{position:relative;padding:10px 0 10px 16px;border-left:2px solid var(--outline-variant)}
+ol.time li::before{content:"";position:absolute;left:-7px;top:16px;width:12px;height:12px;border-radius:50%;
+background:var(--surface-container);border:2px solid var(--on-surface-variant)}
+ol.time li.ok::before{border-color:var(--ok)}ol.time li.bad::before{border-color:var(--error)}
+ol.time li.warn::before{border-color:var(--warn)}ol.time li.run::before{border-color:var(--primary)}
+.when{font:500 12px/1.5 var(--font-plex-mono);color:var(--on-surface-variant)}
+.chip{display:inline-flex;align-items:center;height:24px;margin:0 6px 0 0;padding:0 9px;border-radius:var(--shape-full);
+background:color-mix(in oklch,var(--on-surface) 9%,transparent);font:600 11px/1 var(--font-plex-mono);white-space:nowrap}
+.chip.ok{background:color-mix(in oklch,var(--ok) 24%,transparent)}
+.chip.bad{background:color-mix(in oklch,var(--error) 22%,transparent)}
+.chip.warn{background:color-mix(in oklch,var(--warn) 24%,transparent)}
+.what{display:block;margin-top:4px;overflow-wrap:anywhere}
+.bar{height:6px;border-radius:3px;background:color-mix(in oklch,var(--primary) 35%,transparent);margin-top:6px}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:10px 8px;
+border-bottom:1px solid var(--outline-variant);vertical-align:top}tr:last-child td{border-bottom:0}
+th{color:var(--on-surface-variant);font:500 12px/1.3 var(--font-ui)}.scroll{overflow-x:auto}
+footer{margin-top:40px;font-size:12px;color:var(--on-surface-variant)}
+@media (prefers-color-scheme: dark){:root{color-scheme:dark;
+--error:oklch(0.80 0.11 25);--ok:oklch(0.82 0.10 150);--warn:oklch(0.85 0.11 80);--surface:oklch(0.155 0.01 270);
+--surface-container-low:oklch(0.19 0.012 270);--surface-container:oklch(0.22 0.012 270);
+--surface-container-high:oklch(0.26 0.014 270);--on-surface:oklch(0.95 0.005 270);
+--on-surface-variant:oklch(0.76 0.015 270);--outline-variant:oklch(0.95 0.005 270 / 0.12);
+--primary:oklch(0.74 0.14 268);--on-primary:oklch(0.20 0.06 268);--field-1:oklch(0.45 0.14 268 / 0.45);
+--field-2:oklch(0.40 0.06 200 / 0.4);--field-3:oklch(0.35 0.04 300 / 0.4);--indicator:oklch(0.74 0.14 268);
+--on-indicator:oklch(0.20 0.06 268)}}
+</style>
+</head>
+<body>
+<div class="field" aria-hidden="true"></div>
+<main id="app"></main>
+<script type="application/json" id="showcase-data">__DATA__</script>
+<script>
+const data = JSON.parse(document.getElementById('showcase-data').textContent);
+function h(tag, cls, text, kids) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined && text !== null) el.textContent = String(text);
+  for (const k of kids || []) el.appendChild(k);
+  return el;
+}
+function span(seconds) {
+  if (seconds === null || seconds === undefined) return '—';
+  const m = Math.round(seconds / 60);
+  return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+}
+function tone(word) {
+  const w = String(word || '').toLowerCase();
+  if (['done', 'green', 'approve', 'ready', 'decided', 'answered', 'marked'].includes(w)) return 'ok';
+  if (['red', 'failed', 'changes', 'blocked'].includes(w)) return 'bad';
+  if (['limited', 'question', 'asked', 'pending', 'proposed'].includes(w)) return 'warn';
+  return '';
+}
+function stamp(t) { return String(t || '').slice(0, 16).replace('T', ' '); }
+function render(d) {
+  const m = d.manifest, root = document.getElementById('app');
+  const longest = Math.max(1, ...d.steps.map(s => s.duration_s || 0));
+  root.replaceChildren(
+    h('div', 'head muted', null, [h('span', 'chip', m.task_id), h('span', '', m['class'] || '')]),
+    h('h1', '', m.title),
+    ...(m.objective ? [h('p', 'objective', m.objective)] : []),
+    ...(m.acceptance_criteria.length ? [h('ul', 'criteria', null, m.acceptance_criteria.map(c => h('li', '', c)))] : []),
+    h('div', 'stats', null, [
+      ['Wall time', span(m.wall_duration_s)], ['Time saved by parallel work', span(d.time_saved_s)],
+      ['Tasks', d.artifacts.tasks], ['Cost', m.total_cost === null ? '—' : m.total_cost],
+      ['Final verdict', m.final_verdict || '—']].map(([label, value]) =>
+        h('div', 'stat plate', null, [h('b', '', value), h('span', '', label)]))),
+    h('h2', '', 'How it went'),
+    h('div', 'plane', null, [h('ol', 'time', null, d.steps.map(s => h('li', s.kind.startsWith('run.') && s.outcome === 'started' ? 'run' :
+      tone(s.outcome), null, [h('span', 'when', stamp(s.at) + '  '), h('span', 'chip', s.task),
+      h('span', 'chip state ' + tone(s.outcome), s.outcome || s.kind), h('span', 'what', s.what),
+      ...(s.duration_s ? [h('div', 'bar', null)] : [])])))]),
+    h('h2', '', 'Gates'),
+    gates(d.gates),
+    h('h2', '', 'Reviews'),
+    reviews(d.reviews),
+    h('footer', '', 'Exported by the WOUF companion (' + m.v + ') from the team\'s own records, with secrets, ' +
+      'private paths and personal data removed. ' + stamp(m.started_at) + ' to ' + stamp(m.completed_at) + ' UTC.'));
+  const bars = root.querySelectorAll('.bar');
+  d.steps.filter(s => s.duration_s).forEach((s, i) => { bars[i].style.width = Math.max(2, 100 * s.duration_s / longest) + '%'; });
+}
+function table(cols, rows) {
+  return h('div', 'plane box scroll', null, [h('table', '', null, [h('tr', '', null, cols.map(c => h('th', '', c))),
+    ...rows.map(r => h('tr', '', null, r.map(c => c instanceof Node ? h('td', '', null, [c]) : h('td', '', c))))])]);
+}
+function gates(list) {
+  if (!list.length) return h('p', 'muted', 'No gate ran.');
+  return table(['When', 'Task', 'Result'], list.map(g => [stamp(g.at), g.task, h('span', 'chip ' + tone(g.status), g.status)]));
+}
+function reviews(list) {
+  if (!list.length) return h('p', 'muted', 'No review ran.');
+  return table(['When', 'Task', 'Round', 'Reviewer', 'Verdict'], list.map(r =>
+    [stamp(r.at), r.task, r.round, r.bot + (r.runner ? ' (' + r.runner + ')' : ''), h('span', 'chip ' + tone(r.verdict), r.verdict)]));
+}
+render(data);
+</script>
+</body>
+</html>

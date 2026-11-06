@@ -1,0 +1,57 @@
+/* The companion cockpit on VAIEV UI v8 (wouf): only what v8 has no pattern for, built from its tokens.
+   Phase gates and waves, the log, state chips, the Trusted Bar's command list. Load after v8/css/patterns.css. */
+.view[hidden] { display: none; }
+.lead-line { margin: calc(var(--space-3) * -1) 0 0; max-width: 72ch; }
+.bar-item { position: relative; }
+.app-section > .muted { margin: 0; }
+
+/* state chips: the word stays; the tone comes from the state */
+.state { display: inline-flex; align-items: center; height: 24px; padding: 0 9px; border-radius: var(--shape-full);
+  background: color-mix(in oklch, var(--on-surface) 9%, transparent); font: 600 var(--fs-label-s) / 1 var(--font-plex-mono);
+  white-space: nowrap; }
+.state[data-tone="ok"] { background: color-mix(in oklch, var(--ok) 24%, transparent); }
+.state[data-tone="bad"] { background: color-mix(in oklch, var(--error) 22%, transparent); }
+.state[data-tone="warn"] { background: color-mix(in oklch, var(--warn) 24%, transparent); }
+.state[data-tone="run"] { background: color-mix(in oklch, var(--primary) 24%, transparent); }
+.countdown { font: 500 var(--fs-label-m) / 1.3 var(--font-plex-mono); color: var(--warn); }
+
+/* phase gates and waves: columns that scroll sideways on a phone */
+.pipe, .waves { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(168px, 1fr); gap: var(--space-3);
+  overflow-x: auto; padding-bottom: var(--space-2); }
+.stage { display: grid; align-content: start; gap: var(--space-2); min-height: 112px; padding: var(--space-3);
+  border-radius: var(--shape-xl); }
+.stage-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2);
+  padding: var(--space-1) var(--space-1) 0; }
+.stage .cluster { --gap: var(--space-1); }
+.needs { font: 500 var(--fs-label-m) / 1.3 var(--font-ui); color: var(--on-surface-variant); }
+
+/* the board: read-only cards */
+.kcol { min-height: 0; }
+.kcard { cursor: default; }
+.kcard .meta-line { overflow-wrap: anywhere; }
+
+/* the log: newest first, time on the left; one column on a phone */
+.log { list-style: none; margin: 0; padding: var(--space-1) var(--space-4); max-height: 64dvh; overflow-y: auto;
+  border-radius: var(--shape-xl); }
+.log li { display: grid; grid-template-columns: 17ch minmax(0, 1fr); gap: var(--space-1) var(--space-3);
+  padding: var(--space-3) 0; border-top: 1px solid var(--outline-variant); }
+.log li:first-child { border-top: 0; }
+.log time { font: 500 var(--fs-label-m) / 1.5 var(--font-plex-mono); color: var(--on-surface-variant); }
+.log .what { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-2); overflow-wrap: anywhere; }
+@media (max-width: 599px) { .log li { grid-template-columns: minmax(0, 1fr); } }
+
+.rows .row { flex-wrap: wrap; }
+.decision .muted { overflow-wrap: anywhere; }
+.decision textarea.input { min-height: 72px; }
+
+/* what ran, and the Trusted Bar's exact commands */
+.results { display: grid; gap: var(--space-2); }
+.out { margin: 0; padding: var(--space-3) var(--space-4); border-radius: var(--shape-l); max-height: 40dvh; overflow: auto;
+  background: color-mix(in oklch, var(--on-surface) 6%, transparent); white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 500 var(--fs-label-m) / 1.5 var(--font-plex-mono); }
+.trusted .out { background: color-mix(in oklch, var(--surface) 14%, transparent); color: inherit; }
+.trusted-commands { grid-column: 1 / -1; display: grid; gap: var(--space-2); }
+
+/* a snapshot's bar: words instead of icons, at the bottom on every screen */
+.bar-word { flex: 1 1 0; width: auto; padding: 0 var(--space-3); font: 500 var(--fs-label-l) / 1 var(--font-ui); }
+@media (min-width: 1024px) { body:has(.dock-wide) .app { padding-left: var(--space-10); padding-right: var(--space-10); } }

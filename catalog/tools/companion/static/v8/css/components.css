@@ -1,0 +1,440 @@
+/* VAIEV UI v8 at b9b459f, css/components.css, vendored for the companion with the wouf brand only:
+   the rules, sections and comments of other brands are left out. */
+/* VAIEV UI v8 — components. Markup for each block is in the samples (v8/sites) and in v8/catalog.
+   Every interactive element: three states (rest, hover/focus, pressed), a visible focus ring, ≥ 48px target
+   (chips and votes reach it with an invisible hit area), and a press that squishes the shape. */
+
+/* ── icons ── */
+.icon { width: 24px; height: 24px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; }
+.icon-s { width: 18px; height: 18px; }
+.icon-xs { width: 16px; height: 16px; }
+.logo { fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; }
+:is([data-share], [data-copy])[data-done]::before { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; border-radius: inherit; background: var(--indicator); color: var(--on-indicator); }
+
+/* ── state layer shared by everything pressable ── */
+:is(.btn, .icon-btn, .fab, .bar-item, .chip, .seg-item, .omni-cmd, a.row, button.row, .vote button, .sheet-option) { position: relative; -webkit-tap-highlight-color: transparent; }
+:is(.btn, .icon-btn, .fab, .bar-item, .chip, .omni-cmd, a.row, button.row, .vote button, .sheet-option)::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: currentColor; opacity: 0; transition: opacity var(--dur-effects) var(--spring-effects);
+}
+:is(.btn, .icon-btn, .fab, .bar-item, .chip, .omni-cmd, a.row, button.row, .vote button, .sheet-option):hover::after { opacity: 0.08; }
+:is(.btn, .icon-btn, .fab, .bar-item, .chip, .omni-cmd, a.row, button.row, .vote button, .sheet-option):active::after { opacity: 0.12; }
+
+/* ── buttons ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+  min-height: var(--size-target); padding: 0 var(--space-6); border: 0; border-radius: var(--shape-full);
+  background: transparent; color: var(--on-surface); text-decoration: none; white-space: nowrap;
+  font: 500 var(--fs-label-l) / 1 var(--font-ui);
+}
+.btn-filled { background: var(--primary); color: var(--on-primary); }
+.btn-ink { background: var(--indicator); color: var(--on-indicator); }
+.btn-tonal { background: color-mix(in oklch, currentColor 11%, transparent); }
+.object-ink .btn:not(.btn-filled), .trusted .btn:not(.btn-allow) { color: inherit; }
+.btn-text { padding-inline: var(--space-3); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.plate .btn-text, .object .btn-text { color: inherit; }
+.icon-btn { display: inline-grid; place-items: center; flex: none; width: var(--size-target); height: var(--size-target); border: 0; border-radius: var(--shape-full); background: transparent; color: var(--on-surface); text-decoration: none; }
+.fab {
+  display: grid; place-items: center; width: var(--size-fab); height: var(--size-fab); border: 0; border-radius: var(--shape-full);
+  background: var(--primary); color: var(--on-primary); text-decoration: none;
+}
+.fab .icon { width: 26px; height: 26px; }
+
+/* ── the dock: where the Morph Bar and its satellite float, a gap away from the edges ── */
+.dock {
+  position: fixed; z-index: 40; left: 50%; bottom: calc(var(--size-float-gap) + env(safe-area-inset-bottom, 0px));
+  translate: -50% 0; display: flex; align-items: center; gap: var(--space-3);
+}
+.dock-wide { left: var(--size-float-gap); right: var(--size-float-gap); translate: none; }
+.dock-wide > .bar { flex: 1 1 auto; min-width: 0; }
+/* dock-page: one-page sites keep the dock at the bottom on every screen; a round lens satellite sits next to it */
+.dock-satellite { width: var(--size-fab); height: var(--size-fab); }
+
+/* ── Morph Bar: one floating toolbar that changes its state instead of being replaced.
+   States: tabs (default), mini (while scrolling down: only the current item stays), field (in a detail view:
+   back + text field + actions). Across pages it keeps one view-transition name, so it morphs between them. ── */
+.bar {
+  display: flex; align-items: center; gap: var(--space-1); height: var(--size-bar); padding: var(--space-2);
+  border-radius: var(--shape-full); view-transition-name: morph-bar;
+  transition: gap var(--dur-spatial) var(--spring-spatial), padding var(--dur-spatial) var(--spring-spatial);
+}
+.bar-item {
+  display: grid; place-items: center; flex: none; width: var(--size-bar-item); height: var(--size-bar-item); padding: 0;
+  border: 0; border-radius: var(--shape-full); background: transparent; color: var(--on-surface-variant); text-decoration: none; overflow: hidden;
+  transition: width var(--dur-spatial) var(--spring-spatial), opacity var(--dur-effects) var(--spring-effects),
+              background-color var(--dur-effects) var(--spring-effects), color var(--dur-effects) var(--spring-effects),
+              border-radius var(--dur-spatial-fast) var(--spring-spatial-fast), transform var(--dur-spatial-fast) var(--spring-spatial-fast);
+}
+.bar-item:active { transform: scale(0.94); border-radius: var(--shape-squircle); }
+.bar-item[aria-current="page"], .bar-item[aria-pressed="true"] { background: var(--indicator); color: var(--on-indicator); view-transition-name: bar-current; }
+.bar-item .dot { position: absolute; top: 11px; right: 11px; width: 7px; height: 7px; border-radius: 50%; background: var(--error); box-shadow: 0 0 0 2px var(--surface); }
+.glyph-w { display: inline-flex; align-items: center; gap: 1px; font: italic 600 18px / 1 var(--font-display); letter-spacing: -0.03em; }
+/* the "w/" is drawn by CSS with empty alt text, so the button keeps its own name for assistive tech */
+.glyph-w::before { content: "w/"; content: "w/" / ""; }
+.glyph-w .icon { width: 15px; height: 15px; stroke-width: 2.1; margin-top: 2px; }
+
+/* mini: scrolling down leaves only the current item */
+html[data-scroll="down"] .bar[data-collapsible] { gap: 0; }
+html[data-scroll="down"] .bar[data-collapsible] .bar-item:not([aria-current="page"]) { width: 0; opacity: 0; pointer-events: none; }
+
+/* field: the bar in a detail view */
+.bar-field { gap: var(--space-2); }
+.bar-back {
+  display: inline-flex; align-items: center; gap: 2px; height: var(--size-bar-item); padding: 0 var(--space-3) 0 var(--space-2);
+  border: 0; border-radius: var(--shape-full); background: transparent; color: var(--on-surface-variant); text-decoration: none; font: 500 var(--fs-label-l) / 1 var(--font-ui);
+  white-space: nowrap; overflow: hidden; transition: max-width var(--dur-spatial) var(--spring-spatial), padding var(--dur-spatial) var(--spring-spatial);
+  max-width: 120px;
+}
+.bar-input {
+  flex: 1 1 auto; min-width: 0; height: var(--size-bar-item); padding: 0 var(--space-4); border: 0; border-radius: var(--shape-full);
+  color: var(--on-surface); font: 400 var(--fs-body-m) / 1 var(--font-ui); outline: none;
+}
+.bar-input::placeholder { color: var(--on-surface-variant); }
+/* once there is text, back folds to its arrow and send appears. Text, not focus: a click on another item in the
+   bar (which moves focus) must never shift the items under the pointer */
+.bar-field:has(.bar-input:not(:placeholder-shown)) .bar-back { max-width: var(--size-bar-item); padding: 0 var(--space-3); }
+.bar-field:has(.bar-input:not(:placeholder-shown)) .bar-back span { display: none; }
+.bar-field:has(.bar-input:focus) { outline: 2px solid var(--indicator); outline-offset: 2px; }
+.bar-send { display: none; }
+.bar-field:has(.bar-input:not(:placeholder-shown)) .bar-send { display: grid; background: var(--indicator); color: var(--on-indicator); }
+
+/* explicit states (a demo, or a page that drives the bar itself): parts declare where they belong with data-show */
+.bar[data-state="tabs"] [data-show]:not([data-show~="tabs"]),
+.bar[data-state="mini"] [data-show]:not([data-show~="mini"]),
+.bar[data-state="field"] [data-show]:not([data-show~="field"]),
+.bar[data-state="actions"] [data-show]:not([data-show~="actions"]) { display: none; }
+.bar[data-state="mini"] { gap: 0; }
+.bar[data-state="mini"] .bar-item:not([aria-current="page"], [aria-pressed="true"]) { width: 0; opacity: 0; }
+.bar-count { min-width: 3ch; padding-inline: var(--space-2); font: 600 var(--fs-label-l) / 1 var(--font-ui); font-variant-numeric: tabular-nums; }
+
+/* desktop: the same bar stands up as a rail on the left */
+@media (min-width: 1024px) {
+  .dock:not(.dock-wide, .dock-page) { left: var(--size-float-gap); top: 50%; bottom: auto; translate: 0 -50%; flex-direction: column; }
+  .dock:not(.dock-wide, .dock-page) > .bar { flex-direction: column; height: auto; width: var(--size-bar); }
+  html[data-scroll="down"] .bar[data-collapsible] .bar-item:not([aria-current="page"]) { width: var(--size-bar-item); opacity: 1; pointer-events: auto; }
+  html[data-scroll="down"] .bar[data-collapsible] { gap: var(--space-1); }
+  .dock-wide { left: 50%; right: auto; width: min(640px, 100% - 2 * var(--size-float-gap)); translate: -50% 0; }
+}
+
+/* ── topline: the quiet head of an app view. No pill: the wordmark sits on the light field and scrolls away;
+   on the right, what the board shows right now. ── */
+.topline { display: flex; align-items: baseline; gap: var(--space-2); padding: var(--space-2) var(--space-1) var(--space-1); }
+.topline .wordmark { font-size: 26px; }
+.topline-city { font: 500 var(--fs-title-m) / 1 var(--font-ui); }
+.topline-now { margin-left: auto; color: var(--on-surface-variant); }
+
+/* ── tip menu: a small lens that rises from a bar item; everything behind it blurs. A popover, so it is
+   light-dismissed and keyboard-closable. On wide screens it opens next to the rail. ── */
+.tipmenu {
+  position: fixed; inset: auto auto calc(var(--size-bar) + var(--size-float-gap) * 2 + env(safe-area-inset-bottom, 0px)) 50%;
+  translate: -50% 0; width: min(100% - 2 * var(--size-float-gap), 400px); margin: 0; padding: var(--space-5);
+  border: 0; border-radius: var(--shape-xl); color: var(--on-surface); overflow: visible;
+  gap: var(--space-4); transform-origin: 50% 100%;
+  transition: opacity var(--dur-effects) var(--spring-effects), scale var(--dur-spatial-fast) var(--spring-spatial-fast), display var(--dur-effects) allow-discrete, overlay var(--dur-effects) allow-discrete;
+}
+.tipmenu:popover-open { display: grid; opacity: 1; scale: 1; }
+.tipmenu:not(:popover-open) { opacity: 0; scale: 0.92; }
+@starting-style { .tipmenu:popover-open { opacity: 0; scale: 0.92; } }
+.tipmenu::backdrop { background: color-mix(in oklch, var(--surface) 28%, transparent); -webkit-backdrop-filter: blur(14px) saturate(1.1); backdrop-filter: blur(14px) saturate(1.1); }
+@media (min-width: 1024px) {
+  .tipmenu:not(.tipmenu-bottom) { inset: 50% auto auto calc(var(--size-rail) + var(--size-float-gap) * 2); translate: 0 -50%; transform-origin: 0 50%; }
+}
+.tipmenu fieldset { display: grid; gap: var(--space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
+.tipmenu legend { margin-bottom: var(--space-2); }
+.tip-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--space-3); width: 100%; min-height: 56px; padding: var(--space-2) var(--space-3); border: 0; border-radius: var(--shape-l); background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.tip-row:hover { background: color-mix(in oklch, var(--on-surface) 6%, transparent); }
+.tip-row b { display: block; font-weight: 600; }
+.tip-row small { display: block; color: var(--on-surface-variant); font-size: var(--fs-body-s); line-height: 1.35; }
+.tip-row[aria-pressed="true"] > .icon:first-child { color: var(--indicator); fill: currentColor; }
+.tag-abo { margin-left: 4px; }
+
+/* ── switch: a well with a bead (mesomorph); a checkbox with role="switch" ── */
+.switch { appearance: none; position: relative; flex: none; width: 52px; height: 32px; margin: 0; border-radius: var(--shape-full); cursor: pointer;
+  background: color-mix(in oklch, var(--on-surface) 14%, transparent); box-shadow: inset 0 1px 3px oklch(0 0 0 / 0.18);
+  transition: background-color var(--dur-effects) var(--spring-effects); }
+.switch::after { content: ""; position: absolute; top: 4px; left: 4px; width: 24px; height: 24px; border-radius: 50%; background: var(--surface);
+  box-shadow: inset 0 1px 0 oklch(1 0 0 / 0.5), 0 0 0 0.5px color-mix(in oklch, var(--on-surface) 18%, transparent);
+  transition: translate var(--dur-spatial-fast) var(--spring-spatial-fast), width var(--dur-spatial-fast) var(--spring-spatial-fast); }
+.switch:active::after { width: 30px; }
+.switch:checked { background: var(--indicator); }
+.switch:checked::after { translate: 20px 0; background: var(--on-indicator); }
+.switch:checked:active::after { translate: 14px 0; }
+
+/* ── reply context: a lens chip above the Omniboard that says what you answer ── */
+.reply-ctx { position: absolute; left: 0; bottom: calc(100% + var(--space-2)); display: inline-flex; align-items: center; gap: var(--space-1); min-height: 40px; padding: 0 var(--space-1) 0 var(--space-4); border-radius: var(--shape-full); font: 500 var(--fs-label-l) / 1 var(--font-ui); }
+.reply-ctx .icon-btn { width: 40px; height: 40px; }
+
+/* ── masthead: the floating head of an app view. Two rows on one lens; scrolling down folds the second. ── */
+.masthead {
+  position: sticky; z-index: 30; top: calc(var(--space-3) + env(safe-area-inset-top, 0px));
+  display: grid; grid-template-rows: auto 1fr; padding: var(--space-1) var(--space-1) var(--space-1);
+  border-radius: calc(var(--shape-xl) + 2px); view-transition-name: masthead;
+  transition: grid-template-rows var(--dur-spatial) var(--spring-spatial);
+}
+.masthead-row { display: flex; align-items: center; gap: var(--space-2); min-height: var(--size-target); padding-inline: var(--space-3) var(--space-1); }
+.masthead-fold { overflow: hidden; min-height: 0; }
+.masthead-fold > * { margin: 0 0 0; }
+.masthead-row > .icon-btn { margin-left: auto; }
+.masthead-now { margin-left: auto; color: var(--on-surface-variant); opacity: 0; transition: opacity var(--dur-effects) var(--spring-effects); }
+html[data-scroll="down"] .masthead[data-collapsible] { grid-template-rows: auto 0fr; }
+html[data-scroll="down"] .masthead[data-collapsible] .masthead-now { opacity: 1; }
+.wordmark { display: inline-flex; align-items: center; min-height: 44px; font: italic 600 22px / 1 var(--font-display); letter-spacing: -0.03em; text-decoration: none; }
+.wordmark-slash { font-style: normal; font-weight: 400; color: var(--on-surface-variant); margin-inline: 1px 6px; }
+.channel {
+  display: inline-flex; align-items: center; gap: 2px; min-height: var(--size-target); padding: 0 var(--space-2); margin-left: -8px;
+  border: 0; border-radius: var(--shape-full); background: transparent; font: 500 var(--fs-title-m) / 1 var(--font-ui);
+}
+
+/* ── segmented: one seamless track; the choice is a bead that slides under the label (no buttons) ── */
+.seg { position: relative; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); padding: var(--space-1); border-radius: var(--shape-full); }
+.seg-3 { --n: 3; } .seg-4 { --n: 4; } .seg-5 { --n: 5; }
+.seg-item {
+  z-index: 1; display: grid; place-items: center; min-height: 40px; border-radius: var(--shape-full); cursor: pointer;
+  color: var(--on-surface-variant); font: 500 var(--fs-label-l) / 1 var(--font-ui); transition: color var(--dur-effects) var(--spring-effects);
+}
+.seg-item input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.seg-item:has(input:checked) { color: var(--on-surface); font-weight: 600; }
+.seg-item:has(input:focus-visible) { outline: 2px solid var(--indicator); outline-offset: -2px; }
+.seg-bead {
+  position: absolute; z-index: 0; top: var(--space-1); bottom: var(--space-1); left: var(--space-1);
+  width: calc((100% - var(--space-2)) / var(--n, 4)); border-radius: var(--shape-full);
+  transition: translate var(--dur-spatial) var(--spring-spatial);
+}
+.seg:has(.seg-item:nth-of-type(2) input:checked) .seg-bead { translate: 100% 0; }
+.seg:has(.seg-item:nth-of-type(3) input:checked) .seg-bead { translate: 200% 0; }
+.seg:has(.seg-item:nth-of-type(4) input:checked) .seg-bead { translate: 300% 0; }
+.seg:has(.seg-item:nth-of-type(5) input:checked) .seg-bead { translate: 400% 0; }
+
+/* ── chips (M3: assist, filter, input, suggestion). 32px visual, 48px target. ── */
+.chips { display: flex; gap: var(--space-2); overflow-x: auto; scrollbar-width: none; padding-block: var(--space-2); margin-block: calc(var(--space-2) * -1); }
+.chips::-webkit-scrollbar { display: none; }
+.chips-fade { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent); }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; flex: none; height: var(--size-chip); padding: 0 var(--space-3);
+  border: 0; border-radius: var(--shape-full); background: color-mix(in oklch, var(--on-surface) 8%, transparent); color: var(--on-surface);
+  font: 500 var(--fs-label-l) / 1 var(--font-ui); text-decoration: none; white-space: nowrap;
+}
+.chip::before { content: ""; position: absolute; inset: -8px -2px; }
+.chip .icon { width: 18px; height: 18px; }
+.chip-check { display: none; }
+.chip[aria-pressed="true"] { background: var(--indicator); color: var(--on-indicator); }
+.chip[aria-pressed="true"] .chip-check { display: block; }
+.chip.lens { background: var(--lens); }
+/* a chip that is a radio (filters, sorting): the label is the chip, the input stays for keyboard and forms */
+.chip-radio { cursor: pointer; }
+.chip-radio input { position: absolute; opacity: 0; pointer-events: none; }
+.chip-radio:has(input:checked) { background: var(--indicator); color: var(--on-indicator); }
+.chip-radio:has(input:focus-visible) { outline: 2px solid var(--indicator); outline-offset: 2px; }
+.chip-s { height: 26px; padding: 0 10px; font-size: var(--fs-label-m); }
+.chip-s::before { inset: -11px -4px; }
+
+/* ── carousel (M3 multi-browse / hero). Items snap; at the edges they are masked narrower and sink into
+   depth (smaller, dimmer, softly blurred), driven by the scroll position. ── */
+.carousel { position: relative; }
+.carousel-track {
+  --pad: 0px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: var(--item, 76%); gap: var(--space-2);
+  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: none;
+  padding-inline: var(--pad); scroll-padding-inline: var(--pad); margin-inline: calc(var(--pad) * -1);
+}
+.carousel-track::-webkit-scrollbar { display: none; }
+.carousel-track:focus-visible { outline-offset: -2px; }
+.carousel-item { position: relative; scroll-snap-align: start; border-radius: var(--shape-xl); overflow: hidden; }
+.carousel-hero { --item: 84%; }
+.carousel-wide { --item: 46%; }
+@supports (animation-timeline: view()) {
+  .carousel-item { animation: carousel-depth linear both; animation-timeline: view(inline); }
+}
+@keyframes carousel-depth {
+  entry 0%   { transform: scale(0.84); transform-origin: 0% 50%; filter: brightness(0.82) blur(2px); clip-path: inset(0 42% 0 0 round var(--shape-xl)); }
+  entry 100% { transform: none; transform-origin: 0% 50%; filter: none; clip-path: inset(0 0 0 0 round var(--shape-xl)); }
+  exit 0%    { transform: none; transform-origin: 100% 50%; filter: none; clip-path: inset(0 0 0 0 round var(--shape-xl)); }
+  exit 100%  { transform: scale(0.84); transform-origin: 100% 50%; filter: brightness(0.82) blur(2px); clip-path: inset(0 0 0 42% round var(--shape-xl)); }
+}
+.carousel-dots { display: flex; justify-content: center; gap: 6px; margin-top: var(--space-3); }
+.carousel-dots span { width: 6px; height: 6px; border-radius: var(--shape-full); background: color-mix(in oklch, var(--on-surface) 28%, transparent); transition: width var(--dur-spatial) var(--spring-spatial), background-color var(--dur-effects) var(--spring-effects); }
+.carousel-dots span[data-current] { width: 20px; background: var(--on-surface); }
+.section-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) var(--space-1); }
+
+/* ── feed and posts. Cards "catch": they rise out of depth at the bottom (smaller, tilted back, blurred),
+   settle with a small spring overshoot, and recede at the top. Transform, opacity and filter only. ── */
+.feed { display: grid; gap: var(--space-3); perspective: 1200px; }
+.post { display: grid; gap: var(--space-4); padding: var(--space-5) var(--space-5) var(--space-3); }
+@supports (animation-timeline: view()) {
+  .feed > .post, .feed > .carousel { animation: catch linear both; animation-timeline: view(); }
+  .feed > :focus-within { animation: none; }
+}
+@keyframes catch {
+  entry 0%   { opacity: 0.35; transform: translateY(56px) rotateX(16deg) scale(0.9); transform-origin: 50% 100%; filter: blur(5px); }
+  entry 72%  { opacity: 1; transform: translateY(-4px) rotateX(-1.5deg) scale(1.006); transform-origin: 50% 100%; filter: blur(0); }
+  entry 100% { opacity: 1; transform: none; transform-origin: 50% 100%; filter: none; }
+  exit 45%   { opacity: 1; transform: none; transform-origin: 50% 0%; filter: none; }
+  exit 100%  { opacity: 0.4; transform: translateY(-20px) rotateX(-9deg) scale(0.93); transform-origin: 50% 0%; filter: blur(1.5px); }
+}
+.post-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 20px; }
+.post-kind { display: inline-flex; align-items: center; gap: 6px; }
+.post-text { font: var(--display-weight) var(--fs-title-l) / 1.32 var(--font-display); letter-spacing: -0.01em; text-wrap: pretty; }
+.post-text-s { font-size: var(--fs-title-m); }
+.post-link { text-decoration: none; color: inherit; }
+.post-link::after { content: ""; position: absolute; inset: 0; border-radius: inherit; z-index: 0; }
+.post-link:focus-visible { outline: none; }
+.post:has(.post-link:focus-visible) { outline: 2px solid var(--indicator); outline-offset: 3px; }
+.post-meta { position: relative; z-index: 1; display: flex; align-items: center; gap: var(--space-2); font: 500 var(--fs-label-m) / 1 var(--font-ui); }
+.post-meta .age, .age { font-family: var(--font-plex-mono); letter-spacing: 0.02em; text-transform: uppercase; }
+.post-meta .push { margin-left: auto; }
+.post > :not(.post-link):not(.post-meta) { position: relative; }
+
+/* votes: a small pill; the buttons keep a 48px target through their hit area */
+.vote { display: inline-flex; align-items: center; height: 36px; padding: 0 2px; border-radius: var(--shape-full); background: oklch(0 0 0 / 0.16); }
+.lens .vote, .vote.on-light { background: color-mix(in oklch, var(--on-surface) 8%, transparent); }
+.vote button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--shape-full); background: transparent; color: inherit; }
+.vote button::before { content: ""; position: absolute; inset: -8px -4px; }
+.vote button .icon { width: 18px; height: 18px; stroke-width: 2; }
+.vote button[aria-pressed="true"] { background: oklch(1 0 0 / 0.22); }
+.vote output { min-width: 3ch; text-align: center; font: 600 var(--fs-label-l) / 1 var(--font-ui); font-variant-numeric: tabular-nums; }
+.replies { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px; border-radius: var(--shape-full); color: inherit; text-decoration: none; background: oklch(0 0 0 / 0.12); }
+.replies .icon { width: 18px; height: 18px; }
+.replies { position: relative; } .replies::before { content: ""; position: absolute; inset: -6px -2px; }
+
+/* poll results */
+.poll { display: grid; gap: var(--space-2); list-style: none; padding: 0; margin: 0; }
+.poll li { position: relative; display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 var(--space-4); border-radius: var(--shape-full); overflow: hidden; background: oklch(1 0 0 / 0.07); font: 500 var(--fs-label-l) / 1 var(--font-ui); }
+.poll li::before { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--pct, 0%); border-radius: inherit; background: oklch(1 0 0 / 0.16); transition: width var(--dur-spatial-slow) var(--spring-spatial-slow); }
+.poll li > * { position: relative; }
+.poll li[data-mine] { box-shadow: inset 0 0 0 1.5px oklch(1 0 0 / 0.45); }
+
+/* ── media: shown clear or veiled; hold to see it full screen (a video plays only while held) ── */
+.media { position: relative; overflow: hidden; border-radius: var(--shape-l-inc); background: oklch(0.2 0 0); aspect-ratio: var(--ratio, 4 / 5);
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; touch-action: pan-y; }
+.carousel-item > .media { border-radius: 0; height: 100%; }
+.media > img, .media > video { width: 100%; height: 100%; object-fit: cover; transition: filter var(--dur-effects-slow) var(--spring-effects-slow), transform var(--dur-spatial) var(--spring-spatial); }
+.media[data-veiled] > img, .media[data-veiled] > video { filter: blur(24px) saturate(1.15); transform: scale(1.12); }
+.media[data-pressing] > img, .media[data-pressing] > video { transform: scale(0.98); }
+.media-open { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; border: 0; padding: 0; background: transparent; cursor: zoom-in; }
+.media-open:focus-visible { outline: 2px solid var(--on-surface); outline-offset: -4px; border-radius: inherit; }
+.media-hint { position: absolute; z-index: 2; left: 50%; top: 50%; translate: -50% -50%; display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: var(--shape-full); font: 500 var(--fs-label-m) / 1 var(--font-ui); pointer-events: none; white-space: nowrap; }
+.media:not([data-veiled]) .media-hint { display: none; }
+.media-chips { position: absolute; z-index: 2; inset: var(--space-3) var(--space-3) auto; display: flex; justify-content: space-between; gap: var(--space-2); pointer-events: none; }
+.media-foot { position: absolute; z-index: 2; inset: auto 0 0; display: grid; gap: var(--space-3); padding: 48px var(--space-4) var(--space-4);
+  background: linear-gradient(180deg, transparent, oklch(0.12 0.01 250 / 0.72)); color: oklch(0.97 0.005 85); pointer-events: none; }
+.media-foot .post-text { font-size: var(--fs-title-m); text-shadow: 0 1px 1px oklch(0 0 0 / 0.3); }
+.media-foot .post-meta { pointer-events: auto; }
+.media-foot .vote, .media-foot .replies { background: oklch(0.2 0.01 250 / 0.42); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.media-badge { position: absolute; z-index: 2; right: var(--space-3); bottom: var(--space-3); }
+
+/* the peek: full screen while held (or until closed when opened with a click or the keyboard) */
+.peek { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: oklch(0.97 0 0); overflow: hidden; }
+.peek::backdrop { background: oklch(0.1 0.005 250 / 0.82); -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
+.peek-stage { position: absolute; inset: 0; display: grid; place-items: center; padding: calc(env(safe-area-inset-top, 0px) + 56px) var(--space-3) calc(env(safe-area-inset-bottom, 0px) + 56px); }
+.peek-stage > img, .peek-stage > video { max-width: 100%; max-height: 100%; width: auto; height: auto; border-radius: var(--shape-xl); object-fit: contain; view-transition-name: peek; }
+.peek[open] .peek-stage > * { animation: peek-in var(--dur-spatial) var(--spring-spatial); }
+@keyframes peek-in { from { scale: 0.88; opacity: 0; } }
+.peek-close { position: absolute; z-index: 1; top: calc(env(safe-area-inset-top, 0px) + var(--space-3)); right: var(--space-3); color: var(--on-surface); }
+.peek-hint { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + var(--space-5)); translate: -50% 0; padding: 8px 14px; border-radius: var(--shape-full); font: 500 var(--fs-label-m) / 1 var(--font-ui); color: var(--on-surface); white-space: nowrap; }
+.peek[data-mode="hold"] .peek-close, .peek:not([data-mode="hold"]) .peek-hint { display: none; }
+
+/* ── OmniSearch: a field with commands on top; pull further down and the saved posts arrive as a personal,
+   still anonymous feed (they catch in like the board's cards). ── */
+.omni { position: fixed; inset: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: 0; border: 0; background: transparent; color: var(--on-surface);
+  overflow-y: auto; overscroll-behavior: contain; }
+.omni::backdrop { background: color-mix(in oklch, var(--surface) 62%, transparent); -webkit-backdrop-filter: blur(26px) saturate(1.2); backdrop-filter: blur(26px) saturate(1.2); }
+.omni-inner { display: grid; gap: var(--space-3); max-width: var(--size-read); margin-inline: auto;
+  padding: calc(env(safe-area-inset-top, 0px) + var(--space-3)) var(--space-3) calc(var(--size-bar) + var(--size-float-gap) * 2 + env(safe-area-inset-bottom, 0px)); }
+.omni-sheet { padding: var(--space-2); border-radius: var(--shape-xl); }
+.omni[open] .omni-sheet { animation: omni-in var(--dur-spatial) var(--spring-spatial); }
+@keyframes omni-in { from { translate: 0 -24px; scale: 0.96; opacity: 0; } }
+.omni-field { display: flex; align-items: center; gap: var(--space-3); height: 52px; padding: 0 var(--space-2) 0 var(--space-4); border-radius: calc(var(--shape-xl) - var(--space-2)); }
+.omni-field:focus-within { outline: 2px solid var(--indicator); outline-offset: 1px; }
+.omni-field input { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; background: transparent; outline: none; font-size: var(--fs-body-l); }
+.omni-field input::placeholder { color: var(--on-surface-variant); }
+.omni-cmds { list-style: none; margin: var(--space-2) 0 0; padding: 0; }
+.omni-cmd { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-height: var(--size-target); padding: 0 var(--space-4); border: 0; border-radius: var(--shape-l); background: transparent; color: var(--on-surface); text-align: left; text-decoration: none; font: 500 var(--fs-body-m) / 1 var(--font-ui); }
+.omni-cmd code { min-width: 9ch; font: 500 var(--fs-label-m) / 1 var(--font-plex-mono); color: var(--on-surface-variant); }
+.omni-cmd .icon { margin-left: auto; color: var(--on-surface-variant); }
+.omni-cmd[data-active] { background: color-mix(in oklch, var(--on-surface) 7%, transparent); }
+.omni-handle { display: grid; justify-items: center; gap: 6px; width: 100%; min-height: var(--size-target); padding: var(--space-3) 0 var(--space-1); border: 0; background: transparent; cursor: pointer; color: var(--on-surface-variant); font: 500 var(--fs-label-m) / 1 var(--font-ui); }
+.omni-handle::before { content: ""; width: 36px; height: 4px; border-radius: var(--shape-full); background: color-mix(in oklch, var(--on-surface) 25%, transparent); }
+.omni-saved { display: grid; gap: var(--space-3); margin-top: 18vh; perspective: 1200px; }
+@supports (animation-timeline: view()) {
+  .omni-saved > .post { animation: catch linear both; animation-timeline: view(); }
+}
+.omni .dock { position: fixed; }
+
+/* ── sheet: floats up from the bottom with a gap on every side ── */
+.sheet { position: fixed; inset: auto var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom, 0px)); width: auto; max-width: 560px; max-height: 80dvh; margin: 0 auto; padding: var(--space-2) var(--space-2) var(--space-3);
+  border: 0; border-radius: var(--shape-xl); color: var(--on-surface); overflow: auto;
+  transition: translate var(--dur-spatial) var(--spring-spatial), opacity var(--dur-effects) var(--spring-effects), display var(--dur-spatial) allow-discrete, overlay var(--dur-spatial) allow-discrete; }
+.sheet:not([open]) { translate: 0 30px; opacity: 0; }
+@starting-style { .sheet[open] { translate: 0 30px; opacity: 0; } }
+.sheet::backdrop { background: oklch(0.1 0 0 / 0.22); }
+.sheet-handle { width: 36px; height: 4px; margin: var(--space-1) auto var(--space-3); border-radius: var(--shape-full); background: color-mix(in oklch, var(--on-surface) 25%, transparent); }
+.sheet-title { padding: 0 var(--space-4) var(--space-2); }
+.sheet-option { display: flex; align-items: center; gap: var(--space-3); min-height: 52px; padding: 0 var(--space-4); border-radius: var(--shape-l); cursor: pointer; font: 500 var(--fs-body-l) / 1 var(--font-ui); }
+.sheet-option input { position: absolute; opacity: 0; }
+.sheet-option .icon { margin-left: auto; opacity: 0; }
+.sheet-option:has(input:checked) .icon { opacity: 1; }
+.sheet-option:has(input:focus-visible) { outline: 2px solid var(--indicator); outline-offset: -2px; }
+
+/* ── rows: big tappable lines (links, settings, contacts) ── */
+.rows { list-style: none; margin: 0; padding: var(--space-1); border-radius: var(--shape-xl); }
+.row { display: flex; align-items: center; gap: var(--space-3); min-height: 56px; padding: var(--space-2) var(--space-4); border-radius: calc(var(--shape-xl) - var(--space-1)); color: inherit; text-decoration: none; }
+.row + .row, li + li > .row { border-top: 0; }
+button.row { width: 100%; border: 0; background: transparent; text-align: left; }
+.row-label { min-width: 9ch; color: var(--on-surface-variant); font: 500 var(--fs-label-m) / 1.2 var(--font-plex-mono); }
+.row-value { flex: 1 1 auto; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.row .icon:last-child { color: var(--on-surface-variant); }
+
+/* ── thread ── */
+.thread { display: grid; gap: var(--space-3); }
+.replies-list { display: grid; gap: var(--space-2); margin-left: var(--space-3); padding-left: var(--space-4); border-left: 2px solid var(--outline-variant); list-style: none; }
+.reply { display: grid; gap: var(--space-3); padding: var(--space-4) var(--space-4) var(--space-3); border-radius: var(--shape-l-inc); }
+.reply-text { font-size: var(--fs-body-l); line-height: 1.45; }
+.tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border-radius: var(--shape-full); background: oklch(0 0 0 / 0.14); font: 600 var(--fs-label-s) / 1 var(--font-plex-mono); letter-spacing: 0.06em; }
+.plate:not([data-tone]) .tag { background: color-mix(in oklch, var(--on-surface) 9%, transparent); }
+
+/* ── Trusted Bar: approvals belong to the system, not to generated content. Solid and inverse, so no
+   surface can imitate it; it slides down from the top edge. ── */
+.trusted {
+  position: fixed; z-index: 90; top: calc(env(safe-area-inset-top, 0px) + var(--space-3)); left: 50%; translate: -50% 0;
+  width: min(100% - 2 * var(--space-3), 520px); display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-3); align-items: center;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4); border-radius: var(--shape-l-inc);
+  background: var(--on-surface); color: var(--surface);
+  transition: translate var(--dur-spatial) var(--spring-spatial), opacity var(--dur-effects) var(--spring-effects), display var(--dur-spatial) allow-discrete;
+}
+.trusted[hidden] { display: none !important; }
+@starting-style { .trusted { translate: -50% calc(-100% - 40px); opacity: 0; } }
+.trusted-who { grid-column: 1 / -1; display: flex; align-items: center; gap: var(--space-2); color: color-mix(in oklch, var(--surface) 72%, transparent); }
+.trusted-text { grid-column: 1 / -1; font: 500 var(--fs-body-m) / 1.35 var(--font-ui); }
+.trusted-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: var(--space-2); }
+.trusted .btn { color: var(--surface); min-height: 44px; }
+.trusted .btn-allow { background: var(--surface); color: var(--on-surface); }
+
+/* ── Ask: one seamless glass field, no chat box and no example chips. Idle it is a calm capsule with the
+   light field drifting inside it; focused it grows into a sheet and the page behind softens; the mic
+   turns into send once there is text. While the intelligence works, the field behind the page moves
+   faster (html[data-thinking]); nothing glows. ── */
+.ask { position: relative; isolation: isolate; display: flex; align-items: flex-end; gap: var(--space-1); min-height: 64px; padding: var(--space-2) var(--space-2) var(--space-2) var(--space-5);
+  border-radius: 32px; overflow: hidden;
+  transition: min-height var(--dur-spatial) var(--spring-spatial), border-radius var(--dur-spatial) var(--spring-spatial), padding var(--dur-spatial) var(--spring-spatial); }
+.ask::before { content: ""; position: absolute; inset: -60% -20%; z-index: -1; pointer-events: none; opacity: 0.55;
+  background: radial-gradient(30% 55% at 18% 50%, var(--field-1), transparent 70%), radial-gradient(28% 55% at 82% 45%, var(--field-3), transparent 70%);
+  animation: sheen 16s ease-in-out infinite alternate; }
+@keyframes sheen { to { translate: 14% -8%; rotate: 8deg; } }
+.ask-field { flex: 1 1 auto; min-width: 0; align-self: stretch; display: flex; align-items: center; }
+.ask-field textarea { width: 100%; min-height: 48px; max-height: 32dvh; padding: 12px 0; border: 0; background: transparent; outline: none; resize: none; field-sizing: content;
+  color: var(--on-surface); font: 400 var(--fs-title-m) / 1.4 var(--font-ui); }
+.ask-field textarea::placeholder { color: var(--on-surface-variant); }
+.ask:has(textarea:focus) { min-height: 136px; border-radius: var(--shape-xl); padding: var(--space-4) var(--space-2) var(--space-2) var(--space-6); outline: 2px solid var(--indicator); outline-offset: 3px; }
+.ask-btn { flex: none; display: grid; place-items: center; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--on-surface); }
+.ask-send { display: none; background: var(--primary); color: var(--on-primary); }
+.ask:has(textarea:not(:placeholder-shown)) .ask-send { display: grid; }
+.ask:has(textarea:not(:placeholder-shown)) .ask-mic { display: none; }
+html[data-thinking] .ask::before { animation-duration: 3s; opacity: 0.9; }
+html[data-thinking] .field::before, html[data-thinking] .field::after { animation-duration: 7s; filter: saturate(1.5) brightness(1.08); }
+
+/* ── reduced motion: no scroll-driven depth, no catching ── */
+@media (prefers-reduced-motion: reduce) {
+  .feed > .post, .feed > .carousel, .carousel-item, .omni-saved > .post { animation: none !important; }
+}

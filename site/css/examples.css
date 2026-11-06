@@ -1,0 +1,50 @@
+/* wouf.dev — examples.html only. Each example is one of site.css's flat glass bands; inside, structure comes
+   from space, type and hairlines, never cards. The dialog is the site's demo component (site.css, js/site.js),
+   laid flat on the band so it is not a card in a card. Dark only. No caps, no text under 14px. */
+
+.examples-note { margin-top: var(--space-4); color: var(--on-surface-variant); max-width: 60ch; }
+
+/* the jump row: the four examples in order; js/examples.js marks the one in view. From 860px it stays in reach
+   under the bar while you read; on phones it is a plain row at the top and the bar at the bottom does the rest. */
+.example-nav { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-8); }
+.example-nav .chip { height: 40px; padding: 0 var(--space-4); color: var(--on-surface); text-decoration: none; }
+.example-nav .chip[aria-current="location"] { background: var(--indicator); color: var(--on-indicator); }
+@media (min-width: 860px) {
+  .example-nav { position: sticky; top: 100px; z-index: 10; width: fit-content; padding: var(--space-2); border-radius: var(--shape-full);
+    background: color-mix(in oklch, var(--surface-container) 86%, transparent); border: 1px solid var(--outline-variant);
+    -webkit-backdrop-filter: blur(var(--lens-blur)) saturate(var(--lens-sat)); backdrop-filter: blur(var(--lens-blur)) saturate(var(--lens-sat)); }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .example-nav { background: var(--surface-container); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+/* the examples: a calm column of bands with the index's air between them */
+.examples { display: grid; gap: var(--space-16); margin-top: var(--space-10); }
+@media (min-width: 860px) { .examples { gap: var(--space-24); } }
+.example { min-width: 0; overflow-wrap: break-word; }
+/* a jump lands below the bar and the jump row */
+@media (min-width: 860px) { .example { scroll-margin-top: 176px; } }
+
+.example-head { display: grid; gap: var(--space-4); max-width: 60ch; margin-bottom: var(--space-10); }
+.example-head h2 { max-width: 22ch; }
+.example-mark { justify-self: start; padding: var(--space-1) var(--space-3); border: 1px solid var(--outline-variant); border-radius: var(--shape-full);
+  color: var(--on-surface-variant); font: 500 var(--fs-label-l) / 1.3 var(--font-ui); }
+
+/* the dialog beside its parts from 1100px, one column below */
+.example-body { display: grid; gap: var(--space-10); }
+@media (min-width: 1100px) { .example-body { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); column-gap: var(--space-12); align-items: start; } }
+
+/* the demo on the band: no second surface, its controls at the end of the row */
+.example .demo { padding: 0; border: 0; border-radius: 0; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+.example .demo-bar { justify-content: flex-end; }
+
+/* the parts after the dialog: each starts with a hairline */
+.example-parts { display: grid; gap: var(--space-8); align-content: start; min-width: 0; }
+.example-parts > div { display: grid; gap: var(--space-3); padding-top: var(--space-6); border-top: 1px solid var(--outline-variant); }
+.example-parts ul { display: grid; gap: var(--space-3); margin: 0; padding-left: var(--space-5); }
+.example-parts li { max-width: 52ch; color: var(--on-surface-variant); line-height: 1.55; }
+.example-where p { max-width: 52ch; }
+.example-where p + p { color: var(--on-surface-variant); }
+.example-docs a { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--size-target); color: var(--primary); font: 500 var(--fs-body-l) / 1.3 var(--font-ui); text-decoration: none; }
+.example-docs a:hover { text-decoration: underline; }
+.example-docs .icon { width: 18px; height: 18px; flex: none; }

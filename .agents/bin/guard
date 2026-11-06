@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""guard: a pre-tool tripwire for the lead's own session. Exit 0 = allow, exit 2 = block (reason on stderr).
+
+    guard.py hook                  read a PreToolUse JSON payload on stdin (Claude Code, Codex CLI and
+                                   compatible hooks: {"tool_name": ..., "tool_input": {...}})
+    guard.py check-command "<cmd>" check one shell command
+    guard.py check-path <path>     check one file path an agent wants to write
+
+What it blocks:
+- environment dumps and reads of secret files (the secret store, ~/.ssh keys, .env files);
+- destructive commands (rm -rf on / or ~, tofu/terraform destroy, force pushes to main, DROP DATABASE);
+- writes outside the project (and the extra write_roots), into the secret store, into .env files, and into
+  the guard itself (.agents/bin/guard, team/guard-deny.txt): an agent must not weaken its own guard;
+- every pattern in team/guard-deny.txt (one regular expression per line, # comments).
+
+Settings: [guard] in team/config.ini: secret_dirs (folders no command may touch, e.g. ~/.password-store),
+write_roots (folders outside the project the lead may write, e.g. its memory). The project is the folder that
+holds .agents/ (AGENTS_PROJECT_DIR overrides it). Carried over from an earlier guardrails project.
+
+This is a tripwire for honest mistakes, not a sandbox: a determined process can work around string
+checks. Pair it with the CLI's own sandbox and keep secrets out of reach of the agent's OS user.
+"""
+from __future__ import annotations
+
+import configparser
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+PACK = Path(__file__).resolve().parent.parent
+PROJECT = Path(os.environ.get("AGENTS_PROJECT_DIR") or PACK.parent).resolve()
+
+_SEP = r"(?:^|[;&|]\s*|\$\(\s*|`\s*)"
+_END = r"\s*(?:$|[;&|)`])"
+ENV_DUMP = re.compile(
+    rf"{_SEP}(?:printenv\b|env(?:\s+-\S+)*{_END}|(?:set|export\s+-p|declare\s+-[px]){_END})", re.M
+)
+SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ssh", "eval"}
+HEREDOC = re.compile(r"(?<!<)<<(?!<)-?\s*(\w+)")
+RUN_QUOTED = re.compile(r"(?:^|\s)(?:-[a-z]*c|eval)\s*$|<<<\s*$")
+HEREDOC_WORD = re.compile(r"<<-?\s*$")
+SECRET_READ = [
+    re.compile(r"/proc/[^\s/]+/environ"),
+    re.compile(r"(^|[\s'\"=/])\.env(\.(?!example\b|sample\b)[\w-]+)?($|[\s'\"])"),
+    re.compile(r"~?/?\.ssh/id_[\w-]+(?!\.pub)\b"),
+]
+DESTRUCTIVE = [
+    (re.compile(r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+(/|~|\$HOME)(\s|$|/\*)"), "recursive delete of / or home"),
+    (re.compile(r"\b(tofu|terraform)\s+(.*\s)?destroy\b"), "infrastructure destroy"),
+    (re.compile(r"\bgit\s+push\s+(.*\s)?(--force|-f|--force-with-lease)\b(.*\s)?(main|master)\b"), "force push to main"),
+    (re.compile(r"\bgit\s+push\s+(.*\s)?(main|master)\b.*\s(--force|-f)\b"), "force push to main"),
+    (re.compile(r"\bdrop\s+(database|schema)\b", re.I), "dropping a database"),
+]
+PATCH_PATH = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
+
+
+def team_dir() -> Path:
+    return Path(os.environ.get("WOUF_TEAM_DIR") or PACK / "team").resolve()
+
+
+def setting(key: str) -> list[Path]:
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read(team_dir() / "config.ini")
+    raw = ini.get("guard", key, fallback="")
+    return [Path(os.path.expanduser(item)).resolve() for item in raw.split() if item]
+
+
+def secret_dirs() -> list[Path]:
+    return setting("secret_dirs")
+
+
+def deny_patterns() -> list[re.Pattern]:
+    deny = team_dir() / "guard-deny.txt"
+    if not deny.is_file():
+        return []
+    lines = deny.read_text(encoding="utf-8").splitlines()
+    return [re.compile(line.strip()) for line in lines if line.strip() and not line.lstrip().startswith("#")]
+
+
+def _unquote(line: str) -> str:
+    """Blank quoted data; keep strings a shell runs (after -c, eval, <<, or holding $( / backticks)."""
+    out, i = [], 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\":
+            out.append(line[i:i + 2])
+            i += 2
+            continue
+        if ch not in "'\"":
+            out.append(ch)
+            i += 1
+            continue
+        end = i + 1
+        while end < len(line) and line[end] != ch:
+            end += 2 if ch == '"' and line[end] == "\\" else 1
+        if end >= len(line):
+            out.append(line[i:])
+            break
+        body = line[i + 1:end]
+        before = "".join(out)
+        if RUN_QUOTED.search(before):
+            out.append(f"; {body} ;")
+        elif HEREDOC_WORD.search(before) or (ch == '"' and re.search(r"\$\(|`", body)):
+            out.append(body)
+        else:
+            out.append("_")
+        i = end + 1
+    return "".join(out)
+
+
+def executed_text(cmd: str) -> str:
+    """The parts of a command line a shell runs: heredoc bodies count only when fed to a shell or ssh."""
+    lines, out, i = cmd.split("\n"), [], 0
+    while i < len(lines):
+        line = _unquote(lines[i])
+        out.append(line)
+        i += 1
+        for marker in HEREDOC.finditer(line):
+            segment = re.split(r"[;&|(`]", line[:marker.start()])[-1]
+            to_shell = any(os.path.basename(word) in SHELLS for word in segment.split())
+            while i < len(lines) and lines[i].strip() != marker.group(1):
+                if to_shell:
+                    out.append(_unquote(lines[i]))
+                i += 1
+            i += 1
+    return "\n".join(out)
+
+
+def check_command(cmd: str) -> str | None:
+    if ENV_DUMP.search(executed_text(cmd)) and not re.search(r"\|\s*cut\s+-d\s*=?\s*-f\s*1\b", cmd):
+        return "environment dump (inspect names only: env | cut -d= -f1)"
+    for pattern in SECRET_READ:
+        if pattern.search(cmd):
+            return "reads secret material"
+    for store in secret_dirs():
+        if str(store) in cmd or (str(store).startswith(str(Path.home())) and
+                                 "~" + str(store)[len(str(Path.home())):] in cmd):
+            return "touches the secret store; use .agents/bin/secret"
+    for pattern, why in DESTRUCTIVE:
+        if pattern.search(cmd):
+            return why
+    for pattern in deny_patterns():
+        if pattern.search(cmd):
+            return f"matches project deny rule {pattern.pattern!r}"
+    return None
+
+
+def check_path(raw: str) -> str | None:
+    path = Path(os.path.expanduser(raw))
+    path = (path if path.is_absolute() else PROJECT / path).resolve()
+    for store in secret_dirs():
+        if path == store or store in path.parents:
+            return "write into the secret store"
+    if path in (PACK / "bin" / "guard", team_dir() / "guard-deny.txt"):
+        return "the guard and its rules are changed by the human, not by an agent"
+    if path != PROJECT and PROJECT not in path.parents:
+        if not any(path == root or root in path.parents for root in setting("write_roots")):
+            return "write outside the project"
+        return None
+    rel = path.relative_to(PROJECT).as_posix()
+    if re.search(r"(^|/)\.env(\.[\w-]+)?$", rel):
+        return "write to an .env file"
+    return None
+
+
+def check_hook(payload: dict) -> str | None:
+    tool_input = payload.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command")
+    if isinstance(command, list):
+        command = " ".join(str(c) for c in command)
+    if isinstance(command, str) and (why := check_command(command)):
+        return why
+    for key in ("file_path", "path", "notebook_path"):
+        if isinstance(tool_input.get(key), str) and (why := check_path(tool_input[key])):
+            return why
+    for key in ("input", "patch"):
+        if isinstance(tool_input.get(key), str):
+            for target in PATCH_PATH.findall(tool_input[key]):
+                if why := check_path(target.strip()):
+                    return why
+    return None
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["hook"]:
+        try:
+            why = check_hook(json.loads(sys.stdin.read()))
+        except (json.JSONDecodeError, AttributeError):
+            why = "unreadable hook payload (fail closed)"
+    elif len(argv) == 2 and argv[0] == "check-command":
+        why = check_command(argv[1])
+    elif len(argv) == 2 and argv[0] == "check-path":
+        why = check_path(argv[1])
+    else:
+        print(__doc__, file=sys.stderr)
+        return 64
+    if why:
+        print(f"guard: blocked: {why}. See .agents/rules.md.", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

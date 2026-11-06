@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en" data-brand="wouf" data-theme="dark" data-icons="icons.svg" data-vaiev-manual>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; media-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+<title>WOUF — an agent team in a folder</title>
+<meta name="description" content="An agent team in a folder, set up with the AI tool you already use: one lead you talk to, who hands tasks to a worker and has a review bot check the result. Licensed under Apache-2.0.">
+<link rel="icon" href="brand/wouf-icon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://wouf.dev/">
+<meta property="og:title" content="WOUF — an agent team in a folder">
+<meta property="og:description" content="An agent team in a folder, set up with the AI tool you already use: one lead you talk to, who hands tasks to a worker and has a review bot check the result. Licensed under Apache-2.0.">
+<meta property="og:url" content="https://wouf.dev/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="WOUF">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="https://wouf.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="WOUF: An agent team in a folder. Set up with the AI tool you already use. wouf.dev">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="WOUF — an agent team in a folder">
+<meta name="twitter:description" content="An agent team in a folder, set up with the AI tool you already use: one lead you talk to, who hands tasks to a worker and has a review bot check the result. Licensed under Apache-2.0.">
+<meta name="twitter:image" content="https://wouf.dev/og.png">
+<meta name="theme-color" content="#0a0c11">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/site-fonts.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/materials.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/patterns.css">
+<link rel="stylesheet" href="css/site.css">
+<link rel="expect" href="#end" blocking="render">
+<script src="js/vt.js"></script>
+<script src="js/vaiev.js" defer></script>
+<script src="js/site.js" defer></script>
+</head>
+<body data-page="home">
+<div class="field" aria-hidden="true"></div>
+<div class="sky" aria-hidden="true"></div>
+<a class="skip" href="#top">Skip to content</a>
+<header class="site-bar lens" data-collapsible>
+  <a class="lockup brand-word" href="index.html" aria-label="WOUF, home"><svg class="logo" aria-hidden="true"><use href="icons.svg#wouf-word"/></svg></a>
+  <nav class="site-links" aria-label="Sections"><a class="home-link" href="index.html" aria-current="page">Home</a><a href="examples.html">Examples</a><a href="docs.html">Docs</a></nav>
+  <a class="icon-btn press gh" href="https://github.com/vaiev/wouf" aria-label="WOUF on GitHub"><svg class="icon" aria-hidden="true"><use href="icons.svg#github"/></svg></a>
+</header>
+<main class="page site wide" id="top">
+  <section class="hero home-hero" aria-labelledby="hero-h">
+    <div class="hero-copy">
+      <p class="hero-mark"><span class="emblem lens" aria-hidden="true"><img src="brand/wouf-icon.svg" alt="" width="40" height="40"></span><span>An agent team in a folder.</span></p>
+      <h1 class="display-m" id="hero-h">Say what you need. An AI team does the work and asks when it needs you.</h1>
+      <a class="hero-cue" href="#how">See how it works<svg class="icon" aria-hidden="true"><use href="icons.svg#chevron-down"/></svg></a>
+    </div>
+
+    <figure class="demo" data-demo aria-labelledby="demo-cap">
+      <div class="demo-bar">
+        <div class="demo-chips" role="group" aria-label="Choose an example">
+          <button class="chip" type="button" data-scenario="project" aria-pressed="true">Project</button>
+          <button class="chip" type="button" data-scenario="team" aria-pressed="false">Team</button>
+          <button class="chip" type="button" data-scenario="code" aria-pressed="false">Code</button>
+        </div>
+        <div class="demo-controls">
+          <button class="demo-btn" type="button" data-demo-toggle>Pause</button>
+          <button class="demo-btn" type="button" data-demo-restart>Restart</button>
+        </div>
+      </div>
+      <div class="demo-panes">
+        <ol class="demo-dialog" data-scenario="project" data-active aria-label="Project example">
+          <li class="msg msg-you"><span class="who">You</span><p>Help me plan our community event.</p></li>
+          <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll ask the worker to draft a plan and the review bot to check it.</p></li>
+          <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>What date should the plan use?</p></li>
+          <li class="msg msg-you"><span class="who">You</span><p>June 12.</p></li>
+          <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed draft is ready for you: a plan and decision notes in the task files.</p></li>
+        </ol>
+        <ol class="demo-dialog" data-scenario="team" aria-label="Team example">
+          <li class="msg msg-you"><span class="who">You</span><p>Organize our volunteer tasks.</p></li>
+          <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll have the worker prepare a task list and review check it.</p></li>
+          <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>Who should own the welcome desk?</p></li>
+          <li class="msg msg-you"><span class="who">You</span><p>Sam.</p></li>
+          <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed task list is ready in the task files, with Sam as owner.</p></li>
+        </ol>
+        <ol class="demo-dialog" data-scenario="code" aria-label="Code example">
+          <li class="msg msg-you"><span class="who">You</span><p>Add a check for missing titles.</p></li>
+          <li class="msg msg-lead"><span class="who">WOUF · lead</span><p>I'll brief worker and ask review to check the change.</p></li>
+          <li class="msg msg-lead msg-ask"><span class="who">WOUF · a question from the worker</span><p>Should an empty title be rejected?</p></li>
+          <li class="msg msg-you"><span class="who">You</span><p>Yes.</p></li>
+          <li class="msg msg-done"><span class="who">Done · worker and review</span><p>The reviewed change and its test are ready on the task branch for your decision.</p></li>
+        </ol>
+      </div>
+      <p class="demo-compose" aria-hidden="true"><span class="demo-prompt">›</span><span class="demo-typed" data-demo-typed></span><span class="demo-send"><svg class="icon icon-s"><use href="icons.svg#send"/></svg></span></p>
+      <figcaption class="demo-note" id="demo-cap">An illustrative scenario, not a transcript: what the bots say depends on the model, your setup and your answers. <a href="examples.html">See the examples</a></figcaption>
+    </figure>
+  </section>
+
+  <div class="deck">
+  <section class="band" id="how" aria-labelledby="how-h">
+    <div class="band-head"><p class="band-kicker"><span>How it works</span></p><h2 class="display-s" id="how-h">Like a small company works with a team.</h2>
+      <p class="lead">You talk to one lead. The lead does not do the work itself: it hands each task to a worker, has a review bot check the result and brings the questions to you.</p></div>
+    <ol class="path">
+      <li><h3 class="title-m">You say what you need</h3><p>In plain words, in the AI assistant you already use, in one folder.</p></li>
+      <li><h3 class="title-m">The lead hands it on</h3><p>It writes a short brief for the worker and passes questions back to you.</p></li>
+      <li><h3 class="title-m">The worker does it</h3><p>With a sandboxed setup each bot works in its own workspace, separate from your project and home folders.</p></li>
+      <li><h3 class="title-m">Review checks, you decide</h3><p>A second bot checks the result before it comes to you. What happens with it is your call.</p></li>
+    </ol>
+  </section>
+
+  <section class="band" id="strengths" aria-labelledby="strengths-h">
+    <div class="band-head"><p class="band-kicker"><span>What it does for you</span></p><h2 class="display-s" id="strengths-h">Five things built in.</h2></div>
+    <ul class="strengths" role="list">
+      <li><h3 class="title-l">Each bot in its own workspace</h3><p>Choose a sandboxed setup to give each bot its own workspace, separate from your project and home folders.</p></li>
+      <li><h3 class="title-l">A check before review</h3><p>The gate command you configure, your tests for example, runs before review without an AI call. This repository's own gate adds a complexity check (<code class="mono">scripts/complexity.py</code>) that you can copy into yours.</p></li>
+      <li><h3 class="title-l">Side by side, checked first</h3><p>For a batch, WOUF checks that the tasks' declared file areas do not overlap before starting them together.</p></li>
+      <li><h3 class="title-l">Shared between teams</h3><p>Teams can exchange signed handoffs through a shared Git repository, without a dedicated WOUF server.</p></li>
+      <li><h3 class="title-l">Work you can follow</h3><p>Team events and readable summaries can live in your Git repository, so you can follow the work over time.</p></li>
+    </ul>
+  </section>
+
+  <section class="band" id="start" aria-labelledby="start-h">
+    <div class="band-head"><p class="band-kicker"><span>Get started</span></p><h2 class="display-s" id="start-h">Three steps, then you just talk.</h2>
+      <p class="lead">You choose where to run your team and which available model service to use; WOUF does not require its own cloud or server.</p></div>
+    <ol class="path path-steps">
+      <li><h3 class="title-m">Have an AI assistant for the terminal</h3><p>For example Claude Code, Codex CLI or Antigravity. Install one and sign in once.</p><ul class="clis" role="list" aria-label="Agent CLIs"><li class="chip">Claude Code</li><li class="chip">Codex CLI</li><li class="chip">Antigravity (agy)</li><li class="chip">Grok Build</li><li class="chip">any CLI that reads AGENTS.md</li></ul></li>
+      <li><h3 class="title-m">Make a folder and open it in the terminal</h3><p>Then start your assistant there.</p>
+        <details class="terminal-help">
+          <summary>Never opened a terminal? Here is how.</summary>
+          <div class="terminal-help-body">
+            <p><b>On a Mac:</b> make the folder in Finder. Open the Terminal app, type <kbd>cd</kbd> and a space, drag the folder into the window and press Return.</p>
+            <p><b>On Windows 11:</b> open the folder in File Explorer, right-click an empty spot in it and choose “Open in Terminal”.</p>
+            <p>Now type the name of your assistant, for example <kbd>claude</kbd>, and press Enter.</p>
+          </div>
+        </details></li>
+      <li><h3 class="title-m">Paste one sentence</h3><p>The assistant sets everything up in that folder and asks a few questions, each with a recommendation. Typing your key is the one step it leaves to you.</p></li>
+    </ol>
+    <div class="setup" id="setup">
+      <p class="setup-label">The sentence to paste into your AI assistant</p>
+      <div class="copyline plane"><p id="setup-line">Set up the agent team from https://github.com/vaiev/wouf/blob/main/INSTALL.md in this folder. I am not technical: explain in plain words and do the steps for me.</p><button class="icon-btn press" type="button" data-copy="#setup-line" aria-label="Copy the setup sentence"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg></button></div>
+      <p class="sr-only" id="copy-status" role="status"></p>
+      <p class="muted">Afterwards you just talk: “WOUF, what can you do?”</p>
+    </div>
+  </section>
+
+  <section class="band" id="limits" aria-labelledby="limits-h">
+    <div class="band-head"><p class="band-kicker"><span>Limits</span></p><h2 class="display-s" id="limits-h">Honest about the edges.</h2></div>
+    <ul class="limits" role="list">
+      <li><h3 class="title-m">Host mode has no sandbox</h3><p>Docker, Podman and bubblewrap runs give a bot a separate workspace. Host mode runs without a sandbox and can reach your computer with your permissions.</p></li>
+      <li><h3 class="title-m">What you give a bot, it has</h3><p>Inputs, repository content and keys you hand to a bot can still reach it. A sandbox is not a guarantee against every exploit or leak.</p></li>
+      <li><h3 class="title-m">The network is open by default</h3><p>The shipped container setting gives open network access. Cloud models need the internet, so what a bot works on goes to the model provider.</p></li>
+      <li><h3 class="title-m">Rules are instructions</h3><p>Roles and questions are instructions to the models, not a guarantee that they comply.</p></li>
+      <li><h3 class="title-m">Legal rules are yours to check</h3><p>Whether a setup meets the law where you work depends on the model and how you run it. WOUF does not settle that for you.</p></li>
+    </ul>
+    <p class="band-more"><a href="docs.html#limits">All limits in the docs</a></p>
+  </section>
+
+  <section class="band" id="built" aria-labelledby="built-h">
+    <div class="band-head"><p class="band-kicker"><span>Built with WOUF</span></p><h2 class="display-s" id="built-h">It builds itself.</h2>
+      <p class="lead">WOUF's own work is planned as tasks. In its development repository, more than half of the commits name the task they came from.</p></div>
+    <figure class="log plane"><figcaption class="sr-only">Three of those commits</figcaption>
+      <p><span class="log-hash">T-0090</span> docs(guide): the guide in Markdown, four how-tos, changelog 0.1.0</p>
+      <p><span class="log-hash">T-0096</span> fix(goal): VERIFY reports head and count mismatches, phase semantics defined</p>
+      <p><span class="log-hash">T-0021</span> feat: federate, signed envelopes between two leads</p>
+    </figure>
+    <p class="muted">These are records of the development repository, not proof that every change was made by bots. The public repository starts each release from a fresh history, so its commits do not carry them; the <a href="changelog.html">changelog</a> says what came in, and <a href="https://github.com/vaiev/wouf/blob/main/docs/examples/T-0001.md">docs/examples/T-0001.md</a> follows one task from brief to approval.</p>
+    <div class="finale">
+      <p class="title-l">Your turn: copy the sentence, paste it into your AI assistant.</p>
+      <div class="cluster"><button class="btn btn-filled press" type="button" data-copy="#setup-line"><svg class="icon" aria-hidden="true"><use href="icons.svg#copy"/></svg>Copy the setup sentence</button><a href="#setup">Read the sentence first</a><a href="https://github.com/vaiev/wouf">See the code</a></div>
+    </div>
+  </section>
+  </div>
+
+  <footer class="site-foot">
+    <p class="foot-made"><a class="vaiev" href="https://vaiev.com"><svg class="logo" aria-hidden="true"><use href="icons.svg#vaiev-symbol"/></svg>VAIEV</a></p>
+    <p class="foot-legal"><span>© 2026 VAIEV · WOUF is open source under the Apache 2.0 license</span><a class="icon-btn press gh" href="https://github.com/vaiev/wouf" aria-label="WOUF on GitHub"><svg class="icon icon-s" aria-hidden="true"><use href="icons.svg#github"/></svg></a><a href="docs.html">Docs</a><a href="changelog.html">Changelog</a><a href="contribute.html">Contribute</a><a href="https://vaiev.com/privacy/">Privacy</a></p>
+  </footer>
+</main>
+<span id="end" hidden></span>
+</body>
+</html>
