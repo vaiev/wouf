@@ -6,9 +6,13 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import writable_copy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install-smoke.sh"
@@ -37,10 +41,7 @@ def commit_of_tree(into: Path, change=None) -> Path:
     """A bare clone of the working tree as it is now (committed in a scratch repository).
     change(work), if given, edits the copy before it is committed."""
     work = into / "tree"
-    shutil.copytree(ROOT, work, ignore=shutil.ignore_patterns(".git", "__pycache__"))
-    for path in (work, *work.rglob("*")):
-        if not path.is_symlink():
-            path.chmod(path.stat().st_mode | 0o200)
+    writable_copy(ROOT, work, ignore=shutil.ignore_patterns(".git", "__pycache__"))
     if change:
         change(work)
     env = dict(caller_env(), GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.com",
@@ -388,7 +389,8 @@ class InstallSmokeHostTest(unittest.TestCase):
         install = (ROOT / "INSTALL.md").read_text(encoding="utf-8")
         setup = (ROOT / ".agents" / "skills" / "setup.md").read_text(encoding="utf-8")
         smoke = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("not raw event logs, active flows, goals or practice files", install)
+        # --with-data carries the event log, flows, goals, briefs and practice files (teamlib/porting.py::cmd_export)
+        self.assertIn("a migration snapshot of the event log, flows, goals, the lead's briefs and the practice files", install)
         self.assertIn("mcp_arg", setup)
         self.assertIn("codex login --device-auth", setup)
         self.assertIn("T-smoke", setup)

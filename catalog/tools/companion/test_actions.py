@@ -4,7 +4,7 @@ import http.client, json, os, shutil, stat, subprocess, sys, tempfile, threading
 from pathlib import Path
 D = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, D)
 import companion
-from test_companion import BOARD, SECRET
+from test_companion import BOARD, SECRET, writable_copy
 
 ROOT = Path(D).parents[2]
 FAKE_TEAM = """#!{python}
@@ -210,7 +210,7 @@ class Actions(unittest.TestCase):
     def test_an_answer_reaches_the_real_store(self):
         team_bin = ROOT / ".agents" / "bin" / "team"
         real = self.tmp / "real"
-        shutil.copytree(ROOT / ".agents" / "team", real)
+        writable_copy(ROOT / ".agents" / "team", real)
         env = {**os.environ, "WOUF_TEAM_DIR": str(real)}
         for k in ("WOUF_EVENTS_DIR", "WOUF_LOG_DIR", "WOUF_STATE_DB"):
             env.pop(k, None)

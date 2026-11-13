@@ -187,7 +187,7 @@ def residual_fields(blob, env, known=None):
                 walk(v, f"{where}.{k}" if where else k)
         elif isinstance(value, list):
             for i, v in enumerate(value): walk(v, f"{where}[{i}]")
-        elif isinstance(value, str):
+        elif isinstance(value, str) and not (where == "manifest.v" and value == SCHEMA):  # the constant id
             kinds = residual(value, env, known)
             if kinds: found.append(f"{where} ({kinds})")
     walk(json.loads(blob), "")
@@ -239,8 +239,20 @@ def events(team_bin, env):
         since = page[-1]["seq"]
 
 
+# A run's own id: its package, or a run of it, as a store records them: a review round T.r<n>, a scout or research run
+# T.scout, a fix round T-fix<n>, and these combined (T.r2-fix1). Each belongs to its package T.
+RUN_SUFFIX = re.compile(r"(?:\.[A-Za-z][\w-]*|-fix\d+)+$")
+REVIEW_ROUND = re.compile(r"\.r(\d+)(?![\w])")
+
+
+def package_of(task):
+    return RUN_SUFFIX.sub("", task)
+
+
 def selected(target, tasks):
-    return [t for t in tasks if t["id"] == target or t["id"].startswith(target + "-")]
+    """The packages of a task or epic: the task itself and every T-<n> under it, never a run's own id."""
+    return [t for t in tasks if package_of(t["id"]) == t["id"]
+            and (t["id"] == target or t["id"].startswith(target + "-"))]
 
 
 # ---------- the model ----------
@@ -299,21 +311,23 @@ def tokens(evs):
 
 
 def brief_fields(path):
-    """Objective and acceptance criteria from a brief the owner names (not a file of the team folder)."""
+    """Objective, acceptance criteria and class from a brief the owner names (not a file of the team folder)."""
     text = Path(path).read_text(encoding="utf-8")
-    objective = re.search(r"^Objective:[ \t]*(.*?)\s*$", text, re.M)
+    line = lambda key: (re.search(rf"^{key}:[ \t]*(.*?)\s*$", text, re.M) or [None, None])[1] or None
     block = re.search(r"^Acceptance criteria:[ \t]*\n((?:[ \t]*- .*\n?)+)", text, re.M)
-    criteria = [line.strip()[2:].strip() for line in block.group(1).splitlines()] if block else []
-    return (objective.group(1) if objective and objective.group(1) else None), criteria
+    criteria = [item.strip()[2:].strip() for item in block.group(1).splitlines()] if block else []
+    return line("Objective"), criteria, line("Class")
 
 
-def build(target, snap, evs, brief=None, title=None):
+def build(target, snap, evs, brief=None, title=None, notes=None):
+    """The showcase of target; what the store does not hold (a package without a review) goes to notes."""
+    notes = [] if notes is None else notes
     tasks = selected(target, snap["tasks"])
     if not tasks: refuse(f"no task {target} (or {target}-<n>) in the snapshot")
     open_ = [t["id"] for t in tasks if t["status"] != DONE]
     if open_: refuse(f"not finished yet: {', '.join(open_)}")
     ids = {t["id"] for t in tasks}
-    mine = [e for e in evs if e["task"] in ids]
+    mine = [e for e in evs if package_of(e["task"]) in ids]
     if not mine: refuse(f"no events for {target}")
     reviewers = {b["id"] for b in snap.get("bots") or [] if b.get("role") == "review"} | {"review"}
     steps = steps_of(mine)
@@ -321,26 +335,30 @@ def build(target, snap, evs, brief=None, title=None):
         if any(e["kind"] == "task.state" and (e.get("data") or {}).get("state") == DONE for e in mine) else mine[-1]["t"]
     start = min(e["t"] for e in mine)
     wall = seconds(start, done_at)
-    gates = [{"seq": e["seq"], "at": e["t"], "task": e["task"], "status": e["data"].get("status")}
+    gates = [{"seq": e["seq"], "at": e["t"], "task": package_of(e["task"]), "status": e["data"].get("status")}
              for e in mine if e["kind"] == "flow.step" and e["data"].get("kind") == "gate"]
+    # A review: a finished run with a verdict, by a reviewer or in a review round (T.r<n>, whose n is its round).
     reviews, rounds = [], {}
     for e in mine:
-        d = e.get("data") or {}
-        if e["kind"] == "run.finished" and d.get("verdict") and d.get("bot") in reviewers:
-            rounds[e["task"]] = rounds.get(e["task"], 0) + 1
-            reviews.append({"seq": e["seq"], "at": e["t"], "task": e["task"], "bot": d["bot"],
-                            "runner": d.get("runner"), "verdict": d["verdict"], "round": rounds[e["task"]]})
+        d, package, numbered = e.get("data") or {}, package_of(e["task"]), REVIEW_ROUND.search(e["task"])
+        if e["kind"] == "run.finished" and d.get("verdict") and (d.get("bot") in reviewers or numbered):
+            rounds[package] = int(numbered.group(1)) if numbered else rounds.get(package, 0) + 1
+            reviews.append({"seq": e["seq"], "at": e["t"], "task": package, "bot": d["bot"],
+                            "runner": d.get("runner"), "verdict": d["verdict"], "round": rounds[package]})
     last = {r["task"]: r["verdict"] for r in reviews}
-    verdict = None if len(last) < len(ids) else "approve" if all(v == "approve" for v in last.values()) \
+    unreviewed = sorted(ids - set(last), key=companion.natural)
+    if unreviewed:
+        notes.append(f"no review verdict in the store for {', '.join(unreviewed)}: final_verdict is null")
+    verdict = None if unreviewed else "approve" if all(v == "approve" for v in last.values()) \
         else next(v for v in last.values() if v != "approve")
     costs = [float(t["cost_total"]) for t in tasks if t.get("cost_total")]
     exact = next((t for t in tasks if t["id"] == target), None)
-    objective, criteria = brief_fields(brief) if brief else (None, [])
+    objective, criteria, klass = brief_fields(brief) if brief else (None, [], None)
     paths = [p for t in tasks for p in t.get("paths") or []]
     branches = sorted({e["data"]["ref"] for e in mine if e["kind"] == "run.finished" and e["data"].get("ref")
                        and not re.fullmatch(r"[0-9a-f]{7,40}", e["data"]["ref"])})
     manifest = {"v": SCHEMA, "task_id": target, "title": title or (exact["title"] if exact else target),
-                "class": exact.get("class") if exact else None, "objective": objective,
+                "class": exact.get("class") if exact else klass, "objective": objective,
                 "acceptance_criteria": criteria, "started_at": start, "completed_at": done_at,
                 "wall_duration_s": wall, "total_cost": f"{sum(costs):.2f}" if costs else None,
                 "final_verdict": verdict}
@@ -382,8 +400,13 @@ def export(target, team_dir, out, env=None, pack=None, brief=None, title=None):
     env["WOUF_TEAM_DIR"] = str(Path(team_dir).resolve())
     team_bin = companion._BIN[0] / "team"
     snap = json.loads(team(team_bin, env, "snapshot", "--json"))
-    known = pack_names(team_bin, env)
-    data = scrubbed(build(target, snap, events(team_bin, env), brief, title), env, known)
+    known, notes = pack_names(team_bin, env), []
+    raw = build(target, snap, events(team_bin, env), brief, title, notes)
+    data = scrubbed(raw, env, known)
+    data["manifest"]["v"] = SCHEMA  # the schema id is a constant, never data: it does not pass the masking
+    if data["manifest"]["title"] != raw["manifest"]["title"]:
+        notes.append("the title held a secret, a private path or a name of this computer or its config and is "
+                     "masked; pass --title to choose another")
     blob = json.dumps(data, ensure_ascii=False, indent=1) + "\n"
     text = page(json.loads(blob), data["manifest"]["title"])
     # The last check runs on the final bytes of both files, before either is written.
@@ -399,7 +422,7 @@ def export(target, team_dir, out, env=None, pack=None, brief=None, title=None):
     except BaseException:  # one file alone is no export: the first goes again
         Path(out, "showcase.json").unlink()
         raise
-    return out
+    return out, notes
 
 
 def main(argv):
@@ -412,8 +435,10 @@ def main(argv):
     p.add_argument("--team", default=os.environ.get("WOUF_TEAM_DIR") or ".agents/team", help="team folder")
     p.add_argument("--pack", help="the WOUF pack folder (.agents) with bin/team and bin/log")
     a = p.parse_args(argv)
-    out = export(a.target, a.team, a.out, pack=a.pack, brief=a.brief, title=a.title)
+    out, notes = export(a.target, a.team, a.out, pack=a.pack, brief=a.brief, title=a.title)
     print(f"showcase written to {out}/showcase.json and showcase.html; read it before you share it")
+    for note in notes:
+        print(f"note: {note}")
     return 0
 
 

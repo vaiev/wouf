@@ -13,14 +13,14 @@ A security issue goes in private, never in a public issue: see [SECURITY.md](SEC
 
 ## How a change goes in
 
-The project changes itself with the method it describes: WOUF is built by an agent team under the owner's lead, and the owner reviews and commits every change. Whether a person or a bot writes the change, it takes the same four steps:
+The project changes itself with the method it describes: WOUF is built by an agent team under the owner's lead. The lead merges pull requests in the private development repository itself, under the owner's standing OK, once a reviewer approved the exact head commit and CI is green; the owner sets the direction and decides what goes public. Whether a person or a bot writes the change, it takes the same four steps:
 
 1. **Brief.** One short text says what to change, which paths, and how to tell it is done.
 2. **Worker.** The change is made on its own branch, test first, inside the paths of the brief.
 3. **Review.** Someone who did not write the change reads it in a fresh context and approves the exact commit, or asks for changes. A new commit needs a new approval. CI must be green.
-4. **The owner's yes.** Only the owner merges into `main`.
+4. **The owner's standing OK.** The lead merges into `main` under the owner's standing OK, and the owner decides what goes public.
 
-In WOUF, `team flow` runs steps 2 and 3 and ends `ready` only with an approval of the head commit; `team merge propose` then records it as a proposal for the owner and merges nothing. Step 4 stays with a person. This is a working rule for people and bots: the pack does not enforce it; only the permissions and branch protection of the repository host can.
+In WOUF, `team flow` runs steps 2 and 3 and ends `ready` only with an approval of the head commit; `team merge propose` then records it as a proposal and merges nothing: the pack itself never merges. In this project the lead does step 4 under the owner's standing OK. This is a working rule for people and bots: the pack does not enforce it; only the permissions and branch protection of the repository host can.
 
 For a pull request from outside the team: work on a branch, open a pull request against `main`, and describe the behaviour change and the test you ran. It then goes through review and the owner's yes like any other change. The public history is rebuilt for each release, so the maintainer carries an accepted pull request into the next release.
 

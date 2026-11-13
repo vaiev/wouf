@@ -125,7 +125,7 @@ def symbols_of(repo: Path, files: list[str], names: list[str]) -> dict:
 
 def rules(ini) -> dict:
     found = leaf("classify").rules_of(ini)
-    found["reviews"] = {k: class_options(ini, k)["reviews"] for k in CLASSES}
+    found["reviews"] = {k: class_options(ini, k)["reviews"] for k in known_classes(ini)}
     found["gate"] = get(ini, "flow", "gate")
     return found
 
@@ -195,8 +195,9 @@ def brief_problems(text: str) -> list[str]:
         problems.append(f"Task: {why}")
     elif "." in found.get("Task", ""):
         problems.append(f"Task: task {found.get('Task', '')!r}: letters, digits, _ - only")
-    if klass not in CLASSES:
-        problems.append(f"the brief needs a Class: line, one of {', '.join(CLASSES)}")
+    classes = known_classes()
+    if klass not in classes:
+        problems.append(f"the brief needs a Class: line, one of {', '.join(classes)}")
     need = ["Objective", *([] if klass == "plan" else ["Paths"]), *SECTIONS,
             *(["Threat model"] if klass == "security" else [])]
     problems += [f"the brief needs {name} (non-empty)" for name in need if not found.get(name)]
@@ -204,12 +205,178 @@ def brief_problems(text: str) -> list[str]:
     return problems
 
 
+def brief_field(text: str, name: str) -> str:
+    """The first single-line header "Name: value" of a brief (Task, Class, Paths, Depends) as written."""
+    found = re.search(rf"^{re.escape(name)}:[ \t]*(.*?)[ \t\r]*$", text, re.M)
+    return found.group(1) if found else ""
+
+
+# ---------------------------------------------------------------- bin/project: waves and phase evidence
+
+def waves(plan: dict) -> tuple[list[list[str]], list[str]]:
+    """Kahn's order in levels; problems name unknown dependencies and cycles."""
+    problems = [f"{task} depends on {dep}, which is not in the plan"
+                for task, deps in sorted(plan.items()) for dep in deps if dep not in plan]
+    if problems:
+        return [], problems
+    left, done, out = dict(plan), set(), []
+    while left:
+        wave = sorted(t for t, deps in left.items() if set(deps) <= done)
+        if not wave:
+            return out, [f"cycle among: {', '.join(sorted(left))}"]
+        out.append(wave)
+        done.update(wave)
+        for task in wave:
+            del left[task]
+    return out, []
+
+
+def task_done(task: str) -> tuple[bool, str]:
+    flow = read_json(team_dir() / "flows" / task / "state.json")
+    if flow:
+        return flow.get("status") == "ready", flow.get("status") or "new"
+    board = team_dir() / "board.md"
+    for line in board.read_text(encoding="utf-8").splitlines() if board.is_file() else []:
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if cells and cells[0] == task and len(cells) > 3:
+            return cells[3] == "done", cells[3] or "?"
+    return False, "unknown"
+
+
+def plan_of_briefs(folder: Path) -> dict:
+    """The Depends: lines of the briefs in folder as waves, with what could not be read or is twice."""
+    plan, source, unread = {}, {}, []
+    for path in sorted(folder.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            unread.append(f"cannot read {path.name} (not UTF-8 text)")
+            continue
+        task = brief_field(text, "Task") or path.stem
+        if task in plan:
+            unread.append(f"{task} is in two briefs: {source[task]}, {path.name}")
+            continue
+        plan[task], source[task] = depends_of(text), path.name
+    order, problems = waves(plan)
+    return {"waves": order, "depends": plan, "problems": unread + problems}
+
+
+def draft_brief(task: str, klass: str, paths: list[str], objective: str) -> list[str]:
+    """bin/project's brief: a plan names the goal and no Paths (the planner returns the packages and their paths);
+    a security class gets a Threat model: line to fill."""
+    lines = [f"Task: {task}", f"Class: {klass}", *([] if klass == "plan" else [f"Paths: {' '.join(paths) or TO_FILL}"]),
+             f"Objective: {objective}", "Depends: none", *(f"{name}: {TO_FILL}" for name in SECTIONS)]
+    if klass == "security":
+        lines.append(f"Threat model: {TO_FILL}: what an attacker can reach through "
+                     f"{', '.join(paths) or 'these paths'}, and what must stay true")
+    return lines
+
+
+def class_for(text: str, paths: list[str], files: list[str]) -> str:
+    """teamlib's rules ([classify] of config.ini and its classes' reviews, as team goal new reads them, when it reads)
+    applied to a goal and paths found elsewhere."""
+    try:
+        ini = config() if (team_dir() / "config.ini").is_file() else None
+    except configparser.Error:
+        ini = None
+    classify = leaf("classify")
+    return classify.class_of(text, paths, files, rules(ini) if ini is not None else classify.rules_of(None))["class"]
+
+
+def board_next_task() -> str:
+    """The next task id after the highest T-<n> row of board.md (bin/project brief)."""
+    board = team_dir() / "board.md"
+    taken = ["T-" + "".join(str(int(c)) for c in n)
+             for n in re.findall(r"^\| T-(\d+) \|", board.read_text(encoding="utf-8"), re.M)] \
+        if board.is_file() else []
+    return next_task_id(taken)
+
+
+def phase_brief(task: str) -> Path | None:
+    """The brief bin/project phase reads: the flow's brief.md, else the lead's env/lead/<task>.md."""
+    folder = team_dir() / "flows" / task
+    return next((p for p in (folder / "brief.md", env_dir() / "lead" / f"{task}.md") if p.is_file()), None)
+
+
+def depends_of(text: str) -> list[str]:
+    return words(brief_field(text, "Depends"))
+
+
+def concept_evidence(text: str) -> tuple[str, str]:
+    waiting = [f"{dep} ({status})" for dep in depends_of(text) for ok, status in [task_done(dep)] if not ok]
+    if waiting:
+        return "open", f"waits for {', '.join(waiting)}"
+    deps = depends_of(text)
+    return "pass", f"dependencies done: {', '.join(deps)}" if deps else "no dependencies"
+
+
+def realize_evidence(klass: str, steps: list[dict], need: int) -> tuple[str, str]:
+    runs = [s for s in steps if s.get("kind") in ("worker", "bugfixer")]
+    work = [s for s in runs if s.get("outcome") == "done"]
+    plans = [s["plan"] for s in work if s.get("plan")]
+    stuck = runs[-1] if runs and runs[-1].get("status") in ("blocked", "questions") else None
+    if stuck:
+        return "fail", f"last run {stuck['status']}: {stuck.get('why') or stuck.get('questions') or 'no reason'}"
+    if klass == "plan":
+        # A plan commits nothing: its evidence is the PLAN.md and draft briefs the flow recorded.
+        return ("pass", f"plan written: {', '.join(plans[-1][:3])}") if plans else ("open", "no plan written yet")
+    if not work:
+        return "open", "no finished worker run yet"
+    return gate_evidence(steps, work, need)
+
+
+def gate_evidence(steps: list[dict], work: list[dict], need: int) -> tuple[str, str]:
+    commit = work[-1].get("head")
+    gates = [s for s in steps if s.get("kind") == "gate"]
+    gate = gates[-1] if gates else None
+    # team flow's rule: with reviews = 0 a finished run ends the flow ready, with or without a head and without a
+    # gate; with reviews > 0 a finished run without a head blocks it ("made no commits").
+    if need == 0:
+        return "pass", (f"finished on {commit[:12]} (no gate for this class)" if commit else
+                        "no commits: results in the run's out/ (no gate for this class)")
+    if not commit:
+        return "fail", f"the {work[-1].get('kind') or 'worker'} made no commits"
+    if not gate or gate.get("head") != commit:
+        return "open", f"no gate on the head {commit[:12]} yet"
+    if gate.get("outcome") != "green":
+        return "fail", f"gate red on {commit[:12]}: {gate.get('why') or 'no reason given'}"
+    return "pass", f"gate green on {commit[:12]}"
+
+
+def phase_evidence(text: str, flow: dict) -> list[dict]:
+    """INIT, CONCEPT, REALIZE, VERIFY of a task from its brief and flow state, each with its evidence; a phase only
+    counts once every phase before it passed."""
+    steps = flow.get("steps") or []
+    klass = (brief_field(text, "Class") or "standard").lower()
+    need = class_options(config(), klass)["reviews"] if klass in known_classes() else 1
+    problems = brief_problems(text)
+    out = [("fail", "; ".join(problems)) if problems else
+           ("pass", f"brief complete: Class {klass}, Paths {brief_field(text, 'Paths') or 'none (a plan)'}"),
+           concept_evidence(text), realize_evidence(klass, steps, need)]
+    out.append(verify_evidence(steps, need, flow.get("status") or "new"))
+    result, blocked = [], False
+    for phase, (mark, why) in zip(PHASES, out):
+        mark = "open" if blocked else mark
+        result.append({"phase": phase, "state": mark, "evidence": why})
+        blocked = blocked or mark != "pass"
+    return result
+
+
+def verify_evidence(steps: list[dict], need: int, status: str) -> tuple[str, str]:
+    """The approvals after the last finished run against the reviews the class needs."""
+    work = [s for s in steps if s.get("kind") in ("worker", "bugfixer") and s.get("outcome") == "done"]
+    after = max((i for i, s in enumerate(steps) if s in work), default=-1)
+    approvals = sum(1 for s in steps[after + 1:] if s.get("kind") == "review" and s.get("verdict") == "approve")
+    return ("pass" if approvals >= need and status == "ready" else "open",
+            f"{approvals} of {need} approvals on the head; flow {status}")
+
+
 def next_task() -> str:
     log = state().store()
     snap = state().snapshot(log, ("phases",))
     known = [t["id"] for t in snap["tasks"]] + [r.get("task") or "" for r in snap["phases"]]
     known += [p.stem for p in (env_dir() / "lead").glob("*.md")]
-    return f"T-{state().next_number([k.upper() for k in known], re.compile(r'T-([0-9]+)'))}"
+    return next_task_id(known)
 
 
 def goal_new(ini, args: list[str]) -> int:
@@ -234,9 +401,12 @@ def goal_new_locked(ini, args: list[str]) -> int:
     if brief_file(task).exists() or phase_rows(task):
         die(f"the goal {task} exists already; team goal status {task}")
     classify = leaf("classify")
-    text = mask_secrets(positional[0], KNOWN)[:classify.CAP]
+    # The symbols read the masked goal's first CAP characters; classify gets it whole and unmasked, masks it itself and
+    # keeps the unmasked text for the review floor only (bin/project's former stems), which shows no goal text.
+    text = mask_secrets(positional[0], KNOWN)
     files = files_of(repo)
-    result = classify.classify(text, files, symbols_of(repo, files, classify.symbol_names(text)), rules(ini))
+    names = classify.symbol_names(text[:classify.CAP])
+    result = classify.classify(positional[0], files, symbols_of(repo, files, names), rules(ini))
     brief = render(task, result, repo)
     brief_file(task).parent.mkdir(parents=True, exist_ok=True)
     put(brief_file(task), brief)

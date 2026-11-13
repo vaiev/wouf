@@ -154,11 +154,16 @@ class ProxyCase(unittest.TestCase):
         options = dict(idle_timeout=2.0, max_conns=8)
         options.update(self.limits)
         self.proxy = ep.Proxy(
-            ep.Allowlist(self.allow), log_path=str(self.log_path), resolve=self.resolver, connect=connect, **options
+            ep.Allowlist(self.allow), log_path=str(self.log_path), resolve=self.resolver, connect=connect,
+            private=ep.Private(self.private_pairs()), **options
         )
         self.proxy.bind("127.0.0.1", 0)
         threading.Thread(target=self.proxy.serve_forever, daemon=True).start()
         self.addCleanup(self.proxy.close)
+
+    def private_pairs(self) -> list:
+        """The --private pairs of this case's proxy: none, unless a case says otherwise."""
+        return []
 
     def client(self, timeout: float = 5.0) -> socket.socket:
         sock = socket.create_connection(("127.0.0.1", self.proxy.port), timeout=timeout)
@@ -413,6 +418,196 @@ class PlainHttpTest(ProxyCase):
         self.assertEqual(self.connected, [])
 
 
+class PrivatePairTest(ProxyCase):
+    """--private HOST:PORT (T-0132): exactly that host and port pass as they are; nothing else private does, and
+    the allowlist and the address rule stay as they are for every other request."""
+
+    def private_pairs(self) -> list:
+        self.port = self.upstream.port
+        return [f"{v4(127, 0, 0, 1)}:{self.port}", "host.docker.internal:11434", f"[::1]:{self.port}"]
+
+    def test_the_listed_pair_tunnels_without_a_lookup(self):
+        target = f"{v4(127, 0, 0, 1)}:{self.port}"
+        sock, head = self.request(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+        self.assertTrue(head.startswith(b"HTTP/1.1 200"), head)
+        sock.sendall(b"ping")
+        self.assertEqual(sock.recv(4), b"ping")
+        sock.close()
+        self.assertEqual(self.resolver.calls, [], "a literal is connected as it is, never resolved")
+        self.assertEqual(self.connected, [v4(127, 0, 0, 1)])
+        self.assertIn(f"host={v4(127, 0, 0, 1)} port={self.port} result=allowed reason=private",
+                      self.log_lines()[0])
+
+    def test_a_bracketed_v6_pair_matches_in_every_spelling(self):
+        self.assertEqual(self.connect_status(f"[::1]:{self.port}"), 200)
+        self.assertEqual(self.connect_status(f"[0:0:0:0:0:0:0:1]:{self.port}"), 200)
+        self.assertEqual(self.connected, ["::1", "::1"])
+        self.assertEqual(self.resolver.calls, [])
+
+    def test_the_same_host_on_another_port_is_refused(self):
+        for port in (443, 80, 1, 65535):
+            with self.subTest(port=port):
+                self.assertEqual(self.connect_status(f"{v4(127, 0, 0, 1)}:{port}"), 403)
+        self.assertEqual(self.connect_status(f"[::1]:443"), 403)
+        self.assertEqual(self.connected, [])
+        self.assertTrue(all("reason=ip-literal" in line for line in self.log_lines(5)))
+
+    def test_another_private_host_is_refused(self):
+        for host in (v4(127, 0, 0, 2), v4(10, 0, 0, 5), v4(172, 17, 0, 1), v4(192, 168, 1, 1), "[::2]", "[fd00::1]",
+                     "localhost", "0x7f000001", "127.1", "2130706433"):
+            with self.subTest(host=host):
+                self.assertEqual(self.connect_status(f"{host}:{self.port}"), 403)
+        self.assertEqual(self.connected, [])
+        self.assertEqual(self.resolver.calls, [])
+
+    def test_an_ipv4_address_embedded_in_ipv6_never_reaches_connect(self):
+        # The loopback pair is listed as a dotted literal and as [::1]; none of its IPv6 embeddings matches, so each
+        # falls to the ip-literal refusal before any lookup or connect, on CONNECT and on plain HTTP alike.
+        loop = v4(127, 0, 0, 1)
+        hosts = (f"[::ffff:{loop}]", "[::ffff:7f00:1]", f"[::{loop}]", "[::7f00:1]", "[64:ff9b::7f00:1]",
+                 "[2002:7f00:1::1]", "[::ffff:0:7f00:1]")
+        for host in hosts:
+            with self.subTest(host=host):
+                self.assertEqual(self.connect_status(f"{host}:{self.port}"), 403)
+                self.assertIn(self.status(f"GET http://{host}:{self.port}/ HTTP/1.1\r\n\r\n".encode()), (400, 403))
+        self.assertEqual(self.connected, [])
+        self.assertEqual(self.resolver.calls, [])
+        self.assertTrue(all("result=refused" in line for line in self.log_lines(2 * len(hosts))))
+
+    def test_an_alias_pair_must_resolve_to_private_addresses_only(self):
+        self.resolver.table["host.docker.internal"] = [v4(172, 17, 0, 1)]
+        self.assertEqual(self.connect_status("host.docker.internal:11434"), 200)
+        self.assertEqual(self.connected, [v4(172, 17, 0, 1)])
+        self.assertEqual(self.resolver.calls, ["host.docker.internal"])
+        self.resolver.table["host.docker.internal"] = [v4(172, 17, 0, 1), PUBLIC_V4]
+        self.assertEqual(self.connect_status("host.docker.internal:11434"), 403, "one public answer refuses it")
+        self.assertTrue(any("reason=private-alias-not-private" in line for line in self.log_lines()))
+        self.resolver.table["host.docker.internal"] = [v4(172, 17, 0, 1)]
+        self.assertEqual(self.connect_status("host.docker.internal:11435"), 403, "another port")
+        self.assertEqual(self.connect_status("host.containers.internal:11434"), 403, "the other alias, unlisted")
+        self.assertEqual(self.connect_status("host.docker.internal:443"), 403, "not on the allowlist either")
+        self.assertEqual(self.connected, [v4(172, 17, 0, 1)])
+
+    def test_the_pairs_widen_neither_the_allowlist_nor_the_address_rule(self):
+        self.assertEqual(self.connect_status("allowed.example:443"), 200)
+        self.assertEqual(self.connect_status("unlisted.example:443"), 403)
+        for addr in (v4(127, 0, 0, 1), v4(172, 17, 0, 1), "::1"):
+            self.resolver.table["allowed.example"] = [addr]
+            self.assertEqual(self.connect_status("allowed.example:443"), 403, addr)
+        self.assertEqual(self.connected, [PUBLIC_V4])
+
+
+class PrivateHttpTest(ProxyCase):
+    """Plain HTTP to a private pair: every method and a body pass, as a model API needs; to anything else the
+    GET/HEAD rule stays."""
+    upstream_mode = "http"
+
+    def private_pairs(self) -> list:
+        self.port = self.upstream.port
+        return [f"{v4(127, 0, 0, 1)}:{self.port}"]
+
+    def test_a_post_with_a_body_reaches_the_pair(self):
+        authority = f"{v4(127, 0, 0, 1)}:{self.port}"
+        raw = (f"POST http://{authority}/v1/chat/completions HTTP/1.1\r\nHost: {authority}\r\n"
+               "Content-Type: application/json\r\nContent-Length: 7\r\nProxy-Connection: keep-alive\r\n\r\n"
+               '{"a":1}').encode()
+        sock, head = self.request(raw)
+        self.assertTrue(head.startswith(b"HTTP/1.1 200"), head)
+        body = head.split(b"\r\n\r\n", 1)[1]
+        while len(body) < 5:
+            body += sock.recv(5 - len(body))
+        self.assertEqual(body, b"hello")
+        received = self.upstream.received.decode()
+        self.assertTrue(received.startswith(f"POST /v1/chat/completions HTTP/1.1\r\nHost: {authority}\r\n"), received)
+        self.assertIn("Content-Length: 7\r\n", received)
+        self.assertIn("Content-Type: application/json\r\n", received)
+        self.assertIn("Connection: close\r\n", received)
+        self.assertNotIn("Proxy-Connection", received)
+        self.assertEqual(self.connected, [v4(127, 0, 0, 1)])
+        self.assertIn(f"host={v4(127, 0, 0, 1)} port={self.port} result=allowed reason=private",
+                      self.log_lines()[0])
+
+    def test_a_post_elsewhere_is_still_refused(self):
+        for url in (f"http://{v4(127, 0, 0, 1)}:{self.port + 1 if self.port < 65535 else 1}/",
+                    f"http://{v4(127, 0, 0, 1)}/", f"http://{v4(10, 0, 0, 5)}:{self.port}/", "http://allowed.example/",
+                    f"http://[::ffff:{v4(127, 0, 0, 1)}]:{self.port}/", f"http://[::7f00:1]:{self.port}/"):
+            with self.subTest(url=url):
+                self.assertIn(self.status(f"POST {url} HTTP/1.1\r\nContent-Length: 0\r\n\r\n".encode()), (403, 405))
+        self.assertEqual(self.connected, [])
+
+
+class PrivateParseTest(unittest.TestCase):
+    def test_accepted_pairs_are_canonical(self):
+        cases = {
+            f"{v4(127, 0, 0, 1)}:11434": (v4(127, 0, 0, 1), "11434"),
+            f"{v4(10, 0, 0, 5)}:8080": (v4(10, 0, 0, 5), "8080"),
+            f"{v4(172, 16, 5, 4)}:1": (v4(172, 16, 5, 4), "1"),
+            f"{v4(192, 168, 1, 1)}:65535": (v4(192, 168, 1, 1), "65535"),
+            "[::1]:11434": ("[::1]", "11434"),
+            "[0:0:0:0:0:0:0:1]:11434": ("[::1]", "11434"),
+            "[fd00::1]:80": ("[fd00::1]", "80"),
+            "Host.Docker.Internal:11434": ("host.docker.internal", "11434"),
+            "host.containers.internal.:11434": ("host.containers.internal", "11434"),
+            f"  {v4(127, 0, 0, 1)}:11434  ": (v4(127, 0, 0, 1), "11434"),
+        }
+        for raw, want in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(ep.parse_private(raw), want)
+
+    def test_an_ipv4_address_embedded_in_ipv6_is_refused(self):
+        # Mapped, compatible, SIIT, NAT64 and 6to4 forms of a loopback or private IPv4 address: an IPv6 literal must
+        # be ::1 or unique-local itself, so none of these loads, whatever the address inside.
+        loop, ten = v4(127, 0, 0, 1), v4(10, 0, 0, 1)
+        for bad in (f"[::ffff:{loop}]:80", f"[::ffff:{ten}]:80", "[::ffff:7f00:1]:80", "[::ffff:a00:1]:80",
+                    "[::ffff:c0a8:101]:80", "[::ffff:ac10:504]:80", f"[::{loop}]:80", "[::7f00:1]:80", "[::a00:1]:80",
+                    "[::ffff:0:7f00:1]:80", f"[64:ff9b::{loop}]:80", "[64:ff9b::7f00:1]:80", "[64:ff9b::a00:1]:80",
+                    "[64:ff9b:1::7f00:1]:80", "[2002:7f00:1::1]:80", "[2002:a00:1::1]:80", "[2002:c0a8:101::1]:80",
+                    "[2001:0:7f00:1::1]:80", f"[0:0:0:0:0:ffff:{loop}]:80",
+                    # A trailing dot belongs to a name, not to an address literal.
+                    f"{loop}.:80", f"{ten}.:80", "[::1].:80", "[fd00::1].:80"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    ep.parse_private(bad)
+        # And no pair that loads matches such a spelling at request time.
+        private = ep.Private([f"{loop}:80", "[::1]:80", "[fd00::1]:80"])
+        for host in (f"[::ffff:{loop}]", "[::ffff:7f00:1]", f"[::{loop}]", "[::7f00:1]", "[64:ff9b::7f00:1]",
+                     "[2002:7f00:1::1]", "[::ffff:fd00::1]"):
+            with self.subTest(host=host):
+                self.assertFalse(private.allows(host, "80"))
+
+    def test_everything_else_is_refused(self):
+        loop = v4(127, 0, 0, 1)
+        for bad in ("*:11434", f"{v4(0, 0, 0, 0)}:11434", f"{loop}:11434-11440", f"{v4(10, 0, 0, 0)}/8:11434",
+                    "localhost:11434", "ollama.example:11434", "host.docker.internal", loop, f"{loop}:", f"{loop}:0",
+                    f"{loop}:65536", f"{loop}:044", f"{loop}:*", f"{loop}:11434,11435", PUBLIC_V4 + ":443",
+                    f"{v4(169, 254, 169, 254)}:80", f"{v4(100, 64, 0, 1)}:80", f"{v4(224, 0, 0, 1)}:80",
+                    f"{v4(192, 0, 2, 1)}:80", "::1:11434", "[fe80::1]:80", "[" + PUBLIC_V6 + "]:443", "[::]:80",
+                    "[2002:a00:1::1]:80", f"http://{loop}:11434", f"{loop}:11434/v1", "127.1:11434",
+                    "2130706433:11434", "0x7f000001:11434", "0177.0.0.1:11434",
+                    # Lookalikes of the alias, built here so the catalog's host-name scan reads no such name.
+                    "evil." + ep.HOST_ALIASES[0] + ":11434", ep.HOST_ALIASES[0] + ".example:11434",
+                    "", ":11434", "[]:11434"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    ep.parse_private(bad)
+        with self.assertRaises(ValueError):
+            ep.Private(["pypi.org"])
+
+    def test_allows_matches_host_and_port_exactly(self):
+        private = ep.Private([f"{v4(127, 0, 0, 1)}:11434", "host.docker.internal:11434", "[::1]:11434",
+                              f"{v4(127, 0, 0, 1)}:11434"])
+        self.assertEqual(len(private.pairs), 3, "doubles fold")
+        self.assertTrue(private.allows(v4(127, 0, 0, 1), "11434"))
+        self.assertTrue(private.allows("HOST.DOCKER.INTERNAL.", "11434"))
+        self.assertTrue(private.allows("[0::1]", "11434"))
+        for host, port in ((v4(127, 0, 0, 1), "11435"), (v4(127, 0, 0, 1), "011434"), (v4(127, 0, 0, 1), "443"),
+                           ("localhost", "11434"), (v4(127, 0, 0, 2), "11434"), ("host.containers.internal", "11434"),
+                           ("[::2]", "11434"), ("[::1", "11434"), ("", "11434"), (v4(127, 0, 0, 1), "")):
+            with self.subTest(host=host, port=port):
+                self.assertFalse(private.allows(host, port))
+        self.assertEqual(ep.Private().pairs, ())
+
+
 class LogTest(ProxyCase):
     upstream_mode = "http"
 
@@ -659,6 +854,33 @@ class CommandLineTest(unittest.TestCase):
         )
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("allowlist", proc.stderr)
+
+    def test_a_bad_private_pair_stops_the_start(self):
+        for bad in ("localhost:11434", "*:11434", f"{v4(127, 0, 0, 1)}:11434-11440", PUBLIC_V4 + ":443"):
+            with self.subTest(bad=bad):
+                proc = subprocess.run(
+                    [sys.executable, "-I", "-S", "-B", str(HERE / "egress_proxy.py"), "--port", "0",
+                     "--allow", "allowed.example", "--private", bad],
+                    capture_output=True, text=True, timeout=10,
+                )
+                self.assertEqual(proc.returncode, 2)
+                self.assertIn("private", proc.stderr)
+                self.assertNotIn("listening", proc.stderr)
+
+    def test_the_banner_counts_the_private_pairs(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-B", str(HERE / "egress_proxy.py"), "--bind", "127.0.0.1", "--port", "0",
+             "--allow", "allowed.example", "--private", f"{v4(127, 0, 0, 1)}:11434", "--private",
+             "host.docker.internal:11434"],
+            env={"PATH": os.environ.get("PATH", "")}, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            line = proc.stderr.readline()
+            self.assertIn("1 allowlist entries, 2 private pairs", line)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+            proc.stderr.close()
 
 
 if __name__ == "__main__":

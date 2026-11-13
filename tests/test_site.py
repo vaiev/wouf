@@ -213,7 +213,7 @@ class Site(unittest.TestCase):
 
     def test_vaiev_com_is_allowed_only_as_a_footer_link(self):
         link = ('<footer class="site-foot"><p>Made by <a class="vaiev" href="https://vaiev.com">VAIEV</a></p>'
-                '<p><a href="https://vaiev.com/privacy/">Privacy</a></p></footer>')
+                '<p><a href="https://vaiev.com/privacy/">Privacy &amp; contact</a></p></footer>')
         self.assertEqual(stray_hosts(link), [])
         self.assertEqual(stray_hosts('<a href="https://github.com/vaiev/wouf">x</a> <a href="https://wouf.dev/">y</a>'), [])
         for case in ('<a href="https://vaiev.com">VAIEV</a>',
@@ -248,7 +248,7 @@ class Site(unittest.TestCase):
                 self.assertIn(LEGAL, legal.text())
                 self.assertFalse(any(n.tag == 'span' and n.attrs.get('aria-hidden') == 'true' for n in legal.children if isinstance(n, Node)))
                 hrefs = {a.text(): a.attrs.get('href') for a in legal.all('a') if a.text()}
-                self.assertEqual(hrefs, {**OTHER_PAGE[name], 'Privacy': 'https://vaiev.com/privacy/', 'Changelog': ('/' if name == '404.html' else '') + 'changelog.html', 'Contribute': ('/' if name == '404.html' else '') + 'contribute.html'})
+                self.assertEqual(hrefs, {**OTHER_PAGE[name], 'Privacy & contact': 'https://vaiev.com/privacy/', 'Changelog': ('/' if name == '404.html' else '') + 'changelog.html', 'Contribute': ('/' if name == '404.html' else '') + 'contribute.html'})
                 self.assertEqual(len([a for a in legal.all('a') if a.attrs.get('href') == GITHUB]), 1)
                 self.assertNotIn('Initialized', footers[0].text())
 

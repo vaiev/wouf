@@ -7,8 +7,9 @@ log through bin/log's validating reader, and the bots' declarations; never board
 no event. Every string leaves masked, without control characters, capped (text 2000, titles and the rest 200), with
 the project as <repo>, the team folder as <team>, every other absolute path as <path> (a home path to its line end),
 and the user and host names as <user> and <host>. A change of the meaning of a field is a new schema id; v1 only gains fields,
-so a client ignores the fields it does not know. cli_command is the exact `team` command an owner action runs; a
-quoted "…" is the text the owner types.
+so a client ignores the fields it does not know. The task status enum also accepts closed: an explicitly
+ended flow, preserved in the store with step_status closed, even if its board task remains blocked.
+cli_command is the exact `team` command an owner action runs; a quoted "…" is the text the owner types.
 """
 
 from __future__ import annotations
@@ -62,7 +63,7 @@ SCHEMA = json.dumps({
         "project": obj(id=STR, name=STR),
         "phase": obj(id=STR, project=STR, task=STR, kind=STR, status=NSTR, reason=NSTR, updated=NSTR),
         "task": obj(id=STR, title=STR, **{"class": NSTR}, status={"enum": ["todo", "working", "blocked", "review",
-                                                                              "done"]},
+                                                                              "done", "closed"]},
                     owner_bot=NSTR, paths={"type": "array", "items": STR}, branch=NSTR, head_sha=NSTR,
                     current_step=NSTR, step_status=NSTR, round=INT, cost_total=NSTR, updated=NSTR),
         "edge": obj(**{"from": STR}, to=STR, kind={"enum": ["depends_on", "path_conflict"]}),
@@ -273,7 +274,11 @@ def build(only: str | None) -> dict:
     natural = state.natural
 
     tasks = []
-    for t in sorted(tables["tasks"], key=lambda t: natural(t["id"])):
+    task_rows = list(tables["tasks"])
+    known_tasks = {t["id"] for t in task_rows}
+    task_rows += [{"id": task} for task, f in flows.items()
+                  if task not in known_tasks and f.get("status") == "closed"]
+    for t in sorted(task_rows, key=lambda t: natural(t["id"])):
         task = t["id"]
         if not mine(task):
             continue
@@ -293,8 +298,10 @@ def build(only: str | None) -> dict:
             if c.get("task") == task and c.get("status") != "released":
                 paths += [p for p in parsed(c.get("paths")) if isinstance(p, str) and p not in paths]
         tasks.append({"id": clean(task), "title": clean(t.get("title") or "", "title"),
-                      "class": clean(t.get("class") or None), "status": t.get("state") if t.get("state") in
-                      state.STATUSES else "todo", "owner_bot": clean(t.get("owner") or None),
+                      "class": clean(t.get("class") or None),
+                      "status": "closed" if flow.get("status") == "closed" else
+                      t.get("state") if t.get("state") in state.STATUSES else "todo",
+                      "owner_bot": clean(t.get("owner") or None),
                       "paths": [clean(p) for p in paths], "branch": clean(branch or None),
                       "head_sha": clean(head or None), "current_step": clean(flow.get("kind")),
                       "step_status": clean(flow.get("status")),

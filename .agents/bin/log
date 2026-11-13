@@ -11,7 +11,7 @@
   log state rebuild|check|get TABLE [--task T] [--json]
   log state wait --since SEQ [--timeout S]  poll the rebuildable WAL bus
   log status           where each member stands: its latest line
-  log task TASK        timeline of one task across members
+  log task TASK        timeline of TASK, its TASK-fixN fix rounds and their .rN review rounds across members
   log find WORDS [--member ID] [--limit N]
                        full-text search (SQLite index, rebuilt when logs change)
   log ask "words" [-k N] [--json]  quoted knowledge, decisions and accepted lessons
@@ -26,7 +26,7 @@ Knowledge caches use team/env/knowledge.sqlite; WOUF_KNOWLEDGE_DB names a read-o
 Shared snapshots contain only team/knowledge Markdown, never events or configured project sources.
 JSON display returns null when the requested document conflicts with the secret check.
 Configured sources (config.ini [knowledge] sources) are local Markdown or UTF-8 text; a skipped one is named on stderr.
-WOUF_LOG_DIR overrides the directory (default: .agents/team/logs next to this script).
+WOUF_LOG_DIR overrides the directory (default: the team folder's logs, WOUF_TEAM_DIR or .agents/team).
 """
 
 from __future__ import annotations
@@ -227,8 +227,12 @@ def die(message: str, code: int = 2) -> None:
     raise SystemExit(code)
 
 
+def team_dir() -> Path:
+    return Path(os.environ.get("WOUF_TEAM_DIR") or Path(__file__).resolve().parent.parent / "team").resolve()
+
+
 def log_dir() -> Path:
-    path = Path(os.environ.get("WOUF_LOG_DIR") or Path(__file__).resolve().parent.parent / "team" / "logs")
+    path = Path(os.environ.get("WOUF_LOG_DIR") or team_dir() / "logs")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -337,7 +341,8 @@ def log_files() -> list[Path]:
     """The team's own logs plus the log each bot brought back from its sandbox (team/env/<id>/logs/<id>.jsonl)."""
     directory = log_dir()
     files = sorted(directory.glob("*.jsonl"))
-    files += sorted(p for p in (directory.parent / "env").glob("*/logs/*.jsonl") if p.stem == p.parent.parent.name)
+    team = team_dir() if os.environ.get("WOUF_TEAM_DIR") else directory.parent
+    files += sorted(p for p in (team / "env").glob("*/logs/*.jsonl") if p.stem == p.parent.parent.name)
     return files
 
 
@@ -381,6 +386,41 @@ def fmt(e: dict) -> str:
     if e.get("cost"):
         parts.append(f"~{clean(e['cost'], 20)}")
     return " | ".join(parts)
+
+
+def task_events(pattern, lines):
+    for path in sorted(events_dir().glob("*.jsonl")):
+        for event in event_read(path)[0]:
+            if (pattern.fullmatch(event.get("task") or "")
+                    and event["kind"] in ("run.started", "run.finished", "flow.step")):
+                data = event["data"]
+                lines.append({"t": event["t"], "who": event["actor"], "task": event["task"],
+                              "outcome": data.get("outcome", data.get("status", "")),
+                              "signal": f"{event['kind']} {data.get('bot', data.get('kind', ''))}"})
+
+
+def task_gates(pattern, lines, env):
+    for path in sorted((env / "gate").glob("*/gate.json")):
+        gate_task = path.parent.name
+        if not pattern.fullmatch(gate_task):
+            continue
+        try:
+            gate = json.loads(path.read_text(encoding="utf-8"))
+            lines.append({"t": str(gate.get("ended") or gate.get("started") or ""), "who": "gate", "task": gate_task,
+                          "outcome": gate.get("state", "") if gate.get("ended") else "running",
+                          "signal": gate.get("why", "")})
+        except (OSError, ValueError, AttributeError, RecursionError):
+            pass
+
+
+def task_lines(task: str) -> list[dict]:
+    """Receipts, run and flow events and gate records of the task, its fix rounds TASK-fixN and their review rounds
+    .rN. A run shows through the lead's run receipts and run events; the engine's stage folders are not read."""
+    pattern = re.compile(re.escape(task) + r"(?:-fix[0-9]+)?(?:\.r[0-9]+)?\Z")
+    lines = [e for e in entries() if pattern.fullmatch(e.get("task", ""))]
+    task_events(pattern, lines)
+    task_gates(pattern, lines, team_dir() / "env")
+    return sorted(lines, key=lambda e: (not bool(e.get("t")), e.get("t") or ""))
 
 
 def token_like(text: str) -> bool:
@@ -461,7 +501,7 @@ EVENT_DATA_KEYS = {
     'task.state': {'state', 'owner', 'next_gate', 'blocked_reason', 'artifacts'},
     'run.started': {'bot', 'runner', 'tier', 'model', 'effort', 'outcome', 'verdict', 'ref', 'tokens'},
     'run.finished': {'bot', 'runner', 'tier', 'model', 'effort', 'outcome', 'verdict', 'ref', 'tokens'},
-    'flow.step': {'kind', 'status', 'until'},
+    'flow.step': {'kind', 'status', 'until', 'head', 'base'},
     'question.asked': {'id', 'text', 'from'},
     'question.answered': {'id', 'text', 'from'},
     'decision.recorded': {'number', 'title', 'options', 'why', 'risk', 'authority', 'next', 'status', 'decided_by',
@@ -484,14 +524,17 @@ EVENT_DATA_KEYS = {
     'merge.proposed': {'task', 'head', 'branch', 'verdict'},
     'merge.marked': {'task', 'head', 'branch', 'verdict'},
 }
+# Receipt events (docs/RECEIPTS.md): their data holds exactly task and these hex fields (landed and reviewed commit ids,
+# sha256 of the stored receipt file). Kept apart from EVENT_DATA_KEYS, whose kinds take any subset of their keys.
+RECEIPT_EVENTS = ('receipt.signed', 'receipt.resigned')
+RECEIPT_EVENT_HEX = {'landed': 40, 'reviewed': 40, 'sha256': 64}
 EVENT_ORIGIN = re.compile(r'[0-9a-f]{12}')
 EVENT_CONTROL = re.compile(r'[\x00-\x09\x0b-\x1f\x7f-\x9f]')
 EVENT_FIELDS = {'v', 'id', 'seq', 't', 'origin', 'actor', 'kind', 'task', 'scope', 'data'}
 
 
 def events_dir() -> Path:
-    return Path(os.environ.get('WOUF_EVENTS_DIR') or
-                Path(__file__).resolve().parent.parent / 'team' / 'events')
+    return Path(os.environ.get('WOUF_EVENTS_DIR') or team_dir() / 'events')
 
 
 def event_value(value, writing: bool = True, depth: int = 0, limit: int = 500):
@@ -543,8 +586,24 @@ def event_data(kind, data, writing=True):
     return event_value(data, writing)
 
 
+def event_keys_check(kind, data) -> None:
+    """The data keys of a known kind: a receipt kind holds exactly task and its hex fields, any other kind a subset
+    of its EVENT_DATA_KEYS."""
+    if kind not in RECEIPT_EVENTS:
+        if not isinstance(data, dict) or any(k not in EVENT_DATA_KEYS[kind] for k in data):
+            raise ValueError('event data keys must match the kind allowlist')
+        return
+    if not isinstance(data, dict) or set(data) != {'task', *RECEIPT_EVENT_HEX}:
+        raise ValueError('receipt event data must hold exactly task, landed, reviewed and sha256')
+    if not isinstance(data['task'], str) or task_problem(data['task']):
+        raise ValueError('receipt event task must be a task id')
+    if not all(isinstance(data[k], str) and re.fullmatch(f'[0-9a-f]{{{n}}}', data[k])
+               for k, n in RECEIPT_EVENT_HEX.items()):
+        raise ValueError('receipt event landed and reviewed must be 40, sha256 64 lowercase hex characters')
+
+
 def event_validate(kind, actor, task, data, scope) -> None:
-    if not isinstance(kind, str) or kind not in EVENT_DATA_KEYS:
+    if not isinstance(kind, str) or (kind not in EVENT_DATA_KEYS and kind not in RECEIPT_EVENTS):
         raise ValueError('unknown event kind')
     if not isinstance(actor, str) or (actor not in ('lead', 'human', 'team') and member_problem(actor)):
         raise ValueError('invalid event actor')
@@ -552,8 +611,7 @@ def event_validate(kind, actor, task, data, scope) -> None:
         raise ValueError('invalid event task')
     if scope not in ('local', 'link'):
         raise ValueError('event scope must be local or link')
-    if not isinstance(data, dict) or any(k not in EVENT_DATA_KEYS[kind] for k in data):
-        raise ValueError('event data keys must match the kind allowlist')
+    event_keys_check(kind, data)
     if kind.startswith('lesson.'):
         if 'body' in data and (not isinstance(data['body'], str) or len(data['body']) > 2000):
             raise ValueError('lesson body must be text of at most 2000 characters')
@@ -566,6 +624,9 @@ def event_validate(kind, actor, task, data, scope) -> None:
     if kind.startswith('question.') and 'id' in data and not (
             isinstance(data['id'], str) and re.fullmatch(r'Q-[0-9]{1,9}', data['id'])):
         raise ValueError('question id must look like Q-<n>')
+    if kind == 'flow.step' and not all(isinstance(data[k], str) and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', data[k])
+                                       for k in ('head', 'base') if k in data):
+        raise ValueError('flow.step head and base must be 40 or 64 lowercase hex characters')
     if kind.startswith('merge.') and not (
             isinstance(data.get('head'), str) and re.fullmatch(r'[0-9a-f]{7,40}', data['head'])):
         raise ValueError('merge head must be 7 to 40 lowercase hex characters')
@@ -1631,8 +1692,11 @@ def main(argv: list[str]) -> int:
         for who in sorted(latest):
             say(fmt(latest[who]))
     elif action == "task" and len(rest) == 1:
-        for e in sorted((e for e in entries() if e.get("task") == rest[0]), key=lambda e: e.get("t", "")):
+        lines = task_lines(rest[0])
+        for e in lines:
             say(fmt(e))
+        if not lines:
+            say(f"no lines for {clean(rest[0], 40)}")
     elif action == "find":
         cmd_find(rest)
     elif action == "tail":

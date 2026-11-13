@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 BIN = Path(__file__).resolve().parents[1] / '.agents' / 'bin'
 sys.path.insert(0, str(BIN))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, wouf_env  # noqa: E402
 ORIGIN = '0123456789ab'
 # A registered value of the fixture's secret store, fictional; it is never a real key.
 SECRET = 'fixture-registered-value-7Qx2'
@@ -24,6 +26,11 @@ SECRET = 'fixture-registered-value-7Qx2'
 
 def iso(days, seconds=0):
     return (datetime.now(timezone.utc) - timedelta(days=days) + timedelta(seconds=seconds)).isoformat()
+
+
+def setUpModule() -> None:
+    # No test of this module sees a WOUF_* of the caller; a test's own wouf_env(...) adds what it sets.
+    isolate_wouf_env()
 
 
 class Meta(unittest.TestCase):
@@ -35,8 +42,7 @@ class Meta(unittest.TestCase):
         self.team = Path(self.temp.name) / 'team'
         for folder in ('events', 'logs', 'env'):
             (self.team / folder).mkdir(parents=True)
-        caller = {k: v for k, v in os.environ.items() if not k.startswith('WOUF_')}
-        env = patch.dict(os.environ, {**caller, 'WOUF_TEAM_DIR': str(self.team)}, clear=True)
+        env = wouf_env(WOUF_TEAM_DIR=str(self.team))
         env.start()
         self.addCleanup(env.stop)
         known = list(self.core.KNOWN)
@@ -84,6 +90,15 @@ class Meta(unittest.TestCase):
         return {item['chain']: item for item in json.loads(self.run_meta('--json', *args))['chains']}
 
     # ---- the acceptance criteria
+
+    def test_receipt_steps_follow_the_log_folder_rule(self):
+        line = {'t': iso(0), 'who': 'lead', 'task': 'T-1', 'outcome': 'done', 'signal': 'gate green: passed'}
+        other = Path(self.temp.name) / 'other-logs'
+        other.mkdir()
+        (other / 'lead.jsonl').write_text(json.dumps(line) + '\n')
+        self.assertEqual(self.meta.receipt_steps(), [])
+        with patch.dict(os.environ, WOUF_LOG_DIR=str(other)):
+            self.assertEqual(len(self.meta.receipt_steps()), 1)
 
     def test_repeated_chain_found_with_count_and_tokens(self):
         for i in range(3):

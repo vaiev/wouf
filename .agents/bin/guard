@@ -8,7 +8,9 @@
 
 What it blocks:
 - environment dumps and reads of secret files (the secret store, ~/.ssh keys, .env files);
-- destructive commands (rm -rf on / or ~, tofu/terraform destroy, force pushes to main, DROP DATABASE);
+- destructive commands: rm -rf on / or home (~, ~/, $HOME, "$HOME", ${HOME}); tofu/terraform destroy; DROP DATABASE;
+  force pushes to main or master (-f, --force, --force-with-lease, a +refspec, --mirror), also after git's global
+  options (-C path, -c k=v, --git-dir=p ...); deleting main (--delete, -d, :main);
 - writes outside the project (and the extra write_roots), into the secret store, into .env files, and into
   the guard itself (.agents/bin/guard, team/guard-deny.txt): an agent must not weaken its own guard;
 - every pattern in team/guard-deny.txt (one regular expression per line, # comments).
@@ -19,10 +21,31 @@ holds .agents/ (AGENTS_PROJECT_DIR overrides it). Carried over from an earlier g
 
 This is a tripwire for honest mistakes, not a sandbox: a determined process can work around string
 checks. Pair it with the CLI's own sandbox and keep secrets out of reach of the agent's OS user.
+
+Lead mode ([guard] lead_mode = on; off or unset is the default, and then everything above is all the guard does):
+an allowlist for the lead's own tool calls. The session may write only lead_write (globs relative to the project, or
+absolute or ~-rooted for paths outside it) and write_roots, also inside the project; a refusal names the path or the
+command and says "brief a bot". A file tool's path (Write, Edit, MultiEdit, NotebookEdit, apply_patch, and any tool it
+does not know as a reading one) is resolved against the cwd of the hook payload (a payload without cwd: "cannot tell
+where this writes"; check-path resolves against the project). A shell line is allowed only when every simple command
+in it matches a listed shape with only the listed options (guardlib_lead.py lists them): readers, sed -n, sort, find,
+cd, mkdir, cp, mv, git's reads, git add and git commit of lead_write files, gh's reads, the pack's team, log and
+federate, a [guard] lead_run script run with bash PATH, . PATH or source PATH, and NAME=VALUE for a name of [guard]
+lead_env; a redirection writes only to /dev/null or a lead_write path, with > or >> (2>&1 only as a duplication). A
+construct it does not parse (eval, the -c of bash, sh or another shell guardlib_lead.py lists, also in a hook argv,
+$(...), a loop, a function, xargs, exec, a heredoc to a command not listed) is "cannot tell where this writes", any
+other command or option "not on the lead's list: brief a bot". The base command rules still apply, and so do the base
+path rules to a reading tool (Read, Grep, Glob); the team's config.ini and guard-deny.txt, .agents/bin/guard* and the
+CLIs' settings files stay refused even inside lead_write.
+Any value of lead_mode but off counts as on, and so does a config.ini the guard cannot parse; an error in
+guardlib_lead.py refuses the call.
+It is a tripwire, not a sandbox: the lead_run scripts and the pack's tools run unseen, the guard does not look inside
+them. The host's restricted account or OS sandbox is the stronger boundary.
 """
 from __future__ import annotations
 
 import configparser
+import importlib.util
 import json
 import os
 import re
@@ -46,11 +69,28 @@ SECRET_READ = [
     re.compile(r"(^|[\s'\"=/])\.env(\.(?!example\b|sample\b)[\w-]+)?($|[\s'\"])"),
     re.compile(r"~?/?\.ssh/id_[\w-]+(?!\.pub)\b"),
 ]
+# Parts of the git push patterns below. _SEG stays inside one command (no ; & | newline backtick or closing paren).
+_ARG = r"(?:\"[^\"]*\"|'[^']*'|\S+)"  # an option value, quoted (with spaces) or plain
+_GIT_PUSH = (rf"\bgit(?:\s+(?:-[Cc]\s+{_ARG}|--(?:git-dir|work-tree|namespace|exec-path|attr-source|super-prefix|"
+             rf"config-env)(?:=|\s+){_ARG}|-[a-zA-Z]+|--[a-z][\w-]*(?:={_ARG})?))*\s+push\b")
+_SEG = r"[^;&|\n`)]*"
+_MAIN = r"(?:refs/heads/)?(?:main|master)(?![\w/.-])"
+_TO_MAIN = rf"[\s:+]{_MAIN}"
+_FORCE = r"(?:--force(?:-with-lease)?(?:=\S*)?|-[a-zA-Z]*f[a-zA-Z]*)"
 DESTRUCTIVE = [
     (re.compile(r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+(/|~|\$HOME)(\s|$|/\*)"), "recursive delete of / or home"),
+    (re.compile(r"\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+[\\\"']*(/|~|\$HOME|\$\{HOME\})/?\*?[\\\"']*(?=\s|$|[;&|)`])"),
+     "recursive delete of / or home"),
     (re.compile(r"\b(tofu|terraform)\s+(.*\s)?destroy\b"), "infrastructure destroy"),
     (re.compile(r"\bgit\s+push\s+(.*\s)?(--force|-f|--force-with-lease)\b(.*\s)?(main|master)\b"), "force push to main"),
     (re.compile(r"\bgit\s+push\s+(.*\s)?(main|master)\b.*\s(--force|-f)\b"), "force push to main"),
+    # git push after global options (-C path, -c k=v, --git-dir=p ...), within one command of the line: a force flag
+    # anywhere with a main target, a +refspec to main, --delete/-d or :main, and --mirror.
+    (re.compile(_GIT_PUSH + rf"(?={_SEG}\s{_FORCE}(?=[\s<>)`]|$))(?={_SEG}{_TO_MAIN})"), "force push to main"),
+    (re.compile(_GIT_PUSH + rf"(?={_SEG}\s\+(?:\S*:)?{_MAIN})"), "force push to main"),
+    (re.compile(_GIT_PUSH + rf"(?={_SEG}\s(?:--delete|-[a-zA-Z]*d[a-zA-Z]*)(?=[\s)`]|$))(?={_SEG}{_TO_MAIN})"), "deleting main"),
+    (re.compile(_GIT_PUSH + rf"(?={_SEG}\s:{_MAIN})"), "deleting main"),
+    (re.compile(_GIT_PUSH + rf"(?={_SEG}\s--mirror\b)"), "force push to main (--mirror)"),
     (re.compile(r"\bdrop\s+(database|schema)\b", re.I), "dropping a database"),
 ]
 PATCH_PATH = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
@@ -185,16 +225,55 @@ def check_hook(payload: dict) -> str | None:
     return None
 
 
+def guard_value(key: str) -> str:
+    ini = configparser.ConfigParser(interpolation=None)
+    ini.read(team_dir() / "config.ini")
+    return ini.get("guard", key, fallback="")
+
+
+def lead_mode() -> bool:
+    """[guard] lead_mode: off or unset keeps the rules above alone; any other value turns the lead mode on, and so does
+    a config.ini the guard cannot parse (it must not switch the guard off)."""
+    try:
+        return guard_value("lead_mode").strip().lower() not in ("", "off")
+    except configparser.Error:
+        return True
+
+
+def lead_check(kind: str, value) -> str | None:
+    """The lead's write boundary from guardlib_lead.py next to this file; an error there refuses (fail closed)."""
+    try:
+        sys.dont_write_bytecode = True
+        spec = importlib.util.spec_from_file_location("guardlib_lead", PACK / "bin" / "guardlib_lead.py")
+        lead = sys.modules["guardlib_lead"] = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(lead)
+        boundary = lead.Boundary(project=PROJECT, pack=PACK, team=team_dir(), roots=setting("write_roots"),
+                                 secrets=secret_dirs(), lead_write=guard_value("lead_write"),
+                                 base_command=check_command, base_path=check_path, lead_run=guard_value("lead_run"),
+                                 lead_env=guard_value("lead_env"))
+        return boundary.check(kind, value)
+    except Exception as error:  # noqa: BLE001 - any failure of the lead check blocks
+        return f"lead mode: cannot tell where this writes (the lead check failed: {type(error).__name__}); brief a bot"
+
+
+def check(kind: str, value) -> str | None:
+    """kind: hook, command or path. With lead_mode off the rules above, unchanged; on, the lead's write boundary,
+    which keeps the command rules above and the path rules except "outside the project" (lead_write decides)."""
+    if lead_mode():
+        return lead_check(kind, value)
+    return {"hook": check_hook, "command": check_command, "path": check_path}[kind](value)
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["hook"]:
         try:
-            why = check_hook(json.loads(sys.stdin.read()))
+            why = check("hook", json.loads(sys.stdin.read()))
         except (json.JSONDecodeError, AttributeError):
             why = "unreadable hook payload (fail closed)"
     elif len(argv) == 2 and argv[0] == "check-command":
-        why = check_command(argv[1])
+        why = check("command", argv[1])
     elif len(argv) == 2 and argv[0] == "check-path":
-        why = check_path(argv[1])
+        why = check("path", argv[1])
     else:
         print(__doc__, file=sys.stderr)
         return 64

@@ -24,7 +24,9 @@ import unicodedata
 from urllib.parse import quote, unquote, urlsplit
 
 PARTS = ('overview.md', 'method.md', 'safety.md', 'getting-started.md', 'limits.md', 'SOURCES.md')
-GUIDES = set(PARTS) | {'examples.md', 'contribute.md'}
+# Guide sources outside the combined page: contribute.md has its own page, examples.md belongs to examples.html,
+# first-ten-minutes.md and hermes.md are read on GitHub (hermes.md cites hosts the site does not link to).
+GUIDES = set(PARTS) | {'examples.md', 'contribute.md', 'first-ten-minutes.md', 'hermes.md'}
 DESTINATIONS = {**{'docs/guide/' + n: 'docs.html' for n in PARTS},
                 'docs/guide/contribute.md': 'contribute.html', 'CHANGELOG.md': 'changelog.html'}
 REPOSITORY = 'https://github.com/vaiev/wouf/blob/main/'

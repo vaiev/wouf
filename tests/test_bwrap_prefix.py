@@ -19,6 +19,7 @@ from test_team_cli import KEY  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".agents" / "bin"))
 from teamlib import bwrap  # noqa: E402
+from support import isolate_wouf_env  # noqa: E402
 
 # A tool the build writes into the prefix; a bot finds it on its PATH.
 TOOL = ("mkdir -p /opt/wouf/bin && printf '#!/bin/sh\\necho prefix-tool-ran\\n' > /opt/wouf/bin/wouf-hello "
@@ -40,6 +41,10 @@ echo "WOUF Worker · T-1 · ready-for-review"
 # A line that tries this computer's loopback (the port is filled in) and writes what it got into the prefix.
 LOOPBACK = ("python3 -c \"import socket; s = socket.socket(); s.settimeout(5); r = s.connect_ex(('127.0.0.1', {port})); "
             "open('/opt/wouf/loopback.txt', 'w').write('connected' if r == 0 else 'failed %d' % r)\"")
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class PrefixRecipeTest(unittest.TestCase):

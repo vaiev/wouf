@@ -96,7 +96,9 @@ class LocalRunnerTest(unittest.TestCase):
             self.assertEqual(argv[argv.index('-m') + 1], 'test-model')
         self.assertEqual(section['strong'], 'test-model')
         self.assertEqual(section['light'], 'test-model')
-        self.assertEqual(section['auth'], 'none')
+        self.assertEqual(section['auth'], '', 'empty: no key; the pack reads any other value as a secret name')
+        self.assertIn('[egress] private = host.docker.internal:%d' % self.server.server_port, result.stdout)
+        self.assertNotIn('auth = none', result.stdout)
         self.assertNotIn('test-secret-value', result.stdout)
 
     def test_smoke(self):

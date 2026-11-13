@@ -14,6 +14,9 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, writable_copy  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 FEDERATE = ROOT / ".agents" / "bin" / "federate"
 NAMESPACE = "wouf-a2a"
@@ -40,12 +43,16 @@ def keypair(path: Path, kind: str = "ed25519") -> Path:
     return path
 
 
+def setUpModule() -> None:
+    isolate_wouf_env()
+
+
 class Team:
     """One team folder with its own name, peers, Ed25519 key (outside the team folder) and trusted peer keys."""
 
     def __init__(self, base: Path, name: str, peers: str, signer: str | None = None) -> None:
         self.dir = base / name / "team"
-        shutil.copytree(ROOT / ".agents" / "team", self.dir)
+        writable_copy(ROOT / ".agents" / "team", self.dir)
         self.key = keypair(base / name / "ssh" / "key")
         with (self.dir / "config.ini").open("a", encoding="utf-8") as handle:
             handle.write(f"\n[federation]\nname = {signer or name}\npeers = {peers}\nsigning_key = {self.key}\n")
@@ -224,6 +231,18 @@ class FederateTest(unittest.TestCase):
                 done = self.a.run("pack", *args, "--to", "team-b")
                 self.assertEqual(done.returncode, 2, done.stdout)
                 self.assertIn(word, done.stderr)
+
+    def test_a_task_handoff_takes_the_classes_of_the_config(self) -> None:
+        brief = self.file("docs.md", BRIEF.replace("standard", "docs"))
+        done = self.a.run("pack", "task_handoff", "--file", str(brief), "--to", "team-b")
+        self.assertEqual(done.returncode, 2, done.stdout)
+        self.assertIn("not one of mechanical, standard, complex, security, decision, analysis, plan", done.stderr)
+        for side in (self.a, self.b):
+            with (side.dir / "config.ini").open("a", encoding="utf-8") as handle:
+                handle.write("\n[class.docs]\ntier = strong\n")
+        inbox = self.deliver("task_handoff", "--file", str(brief))
+        done = self.b.run("verify", str(inbox))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
     # ------------------------------------------------------------ receive
 

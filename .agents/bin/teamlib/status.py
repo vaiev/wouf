@@ -105,6 +105,9 @@ def cmd_doctor(ini, clean: bool = False) -> int:
         problems += 0 if ok else 1
 
     check(sys.version_info >= (3, 9), f"Python {sys.version.split()[0]}", "install Python 3.9 or newer")
+    for name in class_sections(ini)[1]:
+        say(f"warning: [class.{visible(name)}] is ignored: a class name is a lowercase letter, then up to 30 of "
+            "a-z, 0-9 and -", err=True)
     # `which` is not enough: on a new Mac, git is a stub that only offers to install the developer tools.
     git_ok = bool(shutil.which("git")) and subprocess.run(["git", "--version"], capture_output=True).returncode == 0
     check(git_ok, "git", "install git (on macOS: xcode-select --install)")
@@ -229,7 +232,11 @@ def cmd_runners(ini) -> None:
 
 # ---------------------------------------------------------------- context
 
+# The most context prints, in characters. The store's rows give way to it, oldest first, and the last line counts them.
 CONTEXT_LIMIT = 4000
+# The most `team context --claude` prints, in bytes of its JSON payload: JSON writes a non-ASCII character as an
+# escape of up to 12 bytes, so the characters' limit alone does not hold it; the lines give way to it the same way.
+BYTE_BUDGET = 16 * 1024
 DUE_WINDOW = timedelta(hours=24)
 RECEIPT_WIDTH = 150
 ROW_WIDTH = 160
@@ -245,17 +252,24 @@ def one_line(text: str, width: int) -> str:
 
 def fit_lines(lines: list[str], limit: int) -> str:
     """The lines joined. When they do not all fit, the first ones that do stay, whole, and one marker line counts the
-    rest: the limit never cuts inside a line, and the first lines (the team line) always stay."""
+    rest: the limit never cuts inside a line, and the first lines (the team line) always stay. A last line that counts
+    the rows left out (more_rows) is kept whatever the cut, so the count and the board path are always said."""
     text = "\n".join(lines)
     if len(text) <= limit:
         return text
+    tail = [lines[-1]] if lines and ROWS_LEFT.fullmatch(lines[-1]) else []
+    body = lines[:len(lines) - len(tail)]
+
+    def joined(kept: list[str]) -> str:
+        cut = len(body) - len(kept)
+        return "\n".join([*kept, *([more(cut)] if cut else []), *tail])
+
     kept = []
-    for line in lines:
-        candidate = [*kept, line]
-        if len("\n".join([*candidate, more(len(lines) - len(candidate))])) > limit:
+    for line in body:
+        if len(joined([*kept, line])) > limit:
             break
-        kept = candidate
-    return "\n".join([*kept, more(len(lines) - len(kept))])
+        kept.append(line)
+    return joined(kept)
 
 
 def more(count: int) -> str:
@@ -265,7 +279,7 @@ def more(count: int) -> str:
 def latest_receipts() -> dict:
     """Each member's latest receipt line, from `log status`; no engine call. The line is already cleaned and capped."""
     done = subprocess.run([sys.executable, str(PACK / "bin" / "log"), "status"], capture_output=True, text=True,
-                          env={**os.environ, "WOUF_LOG_DIR": str(team_dir() / "logs")})
+                          env={**os.environ, "WOUF_LOG_DIR": str(log_dir())})
     found = {}
     for line in done.stdout.splitlines():
         parts = line.split(None, 2)
@@ -384,8 +398,20 @@ def question_line(q: dict) -> str:
     return f"{source}: {one_line(q.get('text') or '', QUESTION_WIDTH)}"
 
 
-def store_lines(view: dict) -> list[str]:
-    """Due items, open tasks, open questions and unfinished flows, from the state cache."""
+def newest_rows(rows: list[str], room: int) -> list[str]:
+    """The last of rows (the newest, in id order) that fit in room characters, one newline each."""
+    kept, used = [], 0
+    for row in reversed(rows):
+        used += len(row) + 1
+        if used > room:
+            break
+        kept.append(row)
+    return kept[::-1]
+
+
+def store_lines(view: dict, room: int = CONTEXT_LIMIT) -> list[str]:
+    """Due items, open tasks, open questions and unfinished flows, from the state cache. Within room characters the
+    questions and flows stay and the newest rows fill what is left; the older rows are counted on the last line."""
     state, lines = STORE[0], []
     due = due_rows([(s.get("when"), s.get("title"), s.get("owner"), s.get("kind")) for s in state.open_items(view)],
                    datetime.now(timezone.utc))
@@ -394,7 +420,8 @@ def store_lines(view: dict) -> list[str]:
     # The open rows as board.md has them, from the store: the same cells the export writes.
     tasks = sorted(view["tasks"], key=lambda t: state.natural(t["id"]))
     rows = [one_line(state.row(state.board_cells(t)), ROW_WIDTH) for t in tasks if (t.get("state") or "todo") != "done"]
-    lines += ["## Open on the board", *(rows or ["nothing open"])]
+    lines += ["## Open on the board"]
+    at = len(lines)
     questions = sorted((q for q in view["questions"].values() if q["status"] == "open"),
                        key=lambda q: state.natural(q["id"]))
     if questions:
@@ -402,6 +429,8 @@ def store_lines(view: dict) -> list[str]:
     flows = []
     for f in sorted(view["flows"], key=lambda f: state.natural(f["id"])):
         task = f.get("task") or f["id"]
+        if f.get("status") == "closed":
+            continue
         if f.get("kind") == "end" and f.get("status") != "ready":
             flows.append(one_line(f"{task} {f.get('status')}" + (f" until {f['until']}" if f.get("until") else ""),
                                   ROW_WIDTH))
@@ -409,7 +438,25 @@ def store_lines(view: dict) -> list[str]:
             flows.append(one_line(f"{task} running, last step {f.get('kind')} {f.get('status')}", ROW_WIDTH))
     if flows:
         lines += ["## Flows not finished", *flows]
-    return lines
+    return with_rows(lines, at, rows, room)
+
+
+def more_rows(count: int) -> str:
+    return f"{count} more rows: team/board.md"
+
+
+ROWS_LEFT = re.compile(r"\d+ more rows: team/board\.md")
+
+
+def with_rows(lines: list[str], at: int, rows: list[str], room: int) -> list[str]:
+    """lines with the newest of rows put in at `at` as far as room characters allow, and a last line that counts the
+    older ones; "nothing open" when there are no rows."""
+    left = room - len("\n".join(lines)) - 1
+    shown = newest_rows(rows, left)
+    if len(shown) < len(rows):
+        shown = newest_rows(rows, left - 1 - len(more_rows(len(rows))))
+    lines[at:at] = shown or ([] if rows else ["nothing open"])
+    return [*lines, more_rows(len(rows) - len(shown))] if len(shown) < len(rows) else lines
 
 
 def board_question(line: str) -> str:
@@ -423,8 +470,31 @@ def board_question(line: str) -> str:
     return one_line(f"- {framed(source, text)}", ROW_WIDTH)
 
 
-def board_lines(team: Path) -> list[str]:
-    """The same from schedule.md, board.md and the flows' state files: a team without events."""
+def board_flows(team: Path) -> list[str]:
+    """The unfinished flows, one line each, from the flows' state files."""
+    flows = []
+    for state in sorted((team / "flows").glob("*/state.json")):
+        flow = read_json(state)
+        if flow.get("status") not in (None, "ready", "closed"):
+            # the reason of a blocked or question flow is bot text: framed as data, as the store's questions are
+            text = flow_line({k: v for k, v in flow.items() if k != "why"})
+            if flow.get("status") in ("blocked", "question"):
+                text = framed(text, str(flow.get("why") or ""))
+            flows.append(one_line(f"{flow.get('task', state.parent.name)} {text}", ROW_WIDTH))
+    return flows
+
+
+def board_order(row: str) -> tuple:
+    """The sort key of a board row: its ID cell in state.natural's order (T-2 < T-10 < T-200), any other ID (S-..) after
+    the T- rows. Not state.natural itself: a team whose store cannot be read must still have its board read."""
+    task = row.split("|")[1].strip()
+    return (not task.startswith("T-"), [int(p) if i % 2 else p for i, p in enumerate(re.split(r"([0-9]+)", task))])
+
+
+def board_lines(team: Path, room: int = CONTEXT_LIMIT) -> list[str]:
+    """The same from schedule.md, board.md and the flows' state files: a team without events. Within room characters
+    the questions and flows stay and the newest rows fill what is left, as store_lines does; the older rows are
+    counted on the last line."""
     lines = []
     clock = team / "schedule.md"
     due = schedule_rows(clock.read_text(encoding="utf-8") if clock.is_file() else "", datetime.now(timezone.utc))
@@ -434,23 +504,40 @@ def board_lines(team: Path) -> list[str]:
     text = board.read_text(encoding="utf-8") if board.is_file() else ""
     rows = [one_line(ln, ROW_WIDTH) for ln in text.splitlines() if re.match(r"^\|\s*[^|\s-][^|]*\|", ln)
             and not re.match(r"^\|\s*ID\s*\|", ln) and "| done |" not in ln]
-    lines += ["## Open on the board", *(rows or ["nothing open"])]
+    rows.sort(key=board_order)  # the file may be ordered any way; newest_rows takes the last
+    lines += ["## Open on the board"]
+    at = len(lines)
     asked = text.split("## Questions for the human", 1)[1] if "## Questions for the human" in text else ""
     questions = [board_question(ln) for ln in asked.splitlines() if ln.startswith("- ") and ln.strip() != "-"]
     if questions:
         lines += ["## Questions for the human", *questions]
-    flows = []
-    for state in sorted((team / "flows").glob("*/state.json")):
-        flow = read_json(state)
-        if flow.get("status") not in (None, "ready"):
-            # the reason of a blocked or question flow is bot text: framed as data, as the store's questions are
-            text = flow_line({k: v for k, v in flow.items() if k != "why"})
-            if flow.get("status") in ("blocked", "question"):
-                text = framed(text, str(flow.get("why") or ""))
-            flows.append(one_line(f"{flow.get('task', state.parent.name)} {text}", ROW_WIDTH))
+    flows = board_flows(team)
     if flows:
         lines += ["## Flows not finished", *flows]
-    return lines
+    return with_rows(lines, at, rows, room)
+
+
+def hook_payload(context: str) -> str:
+    """The SessionStart hook's JSON, as `team context --claude` prints it."""
+    return dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}})
+
+
+def fit_context(lines: list[str], view, team: Path, claude: bool) -> str:
+    """The team's lines (the head and the bots first) and the store's or board's lines, fitted to CONTEXT_LIMIT
+    characters. For the hook the payload must also hold BYTE_BUDGET bytes: the character limit shrinks until it does,
+    so the cut is never a silent one."""
+    head_size = len("\n".join(lines))
+    limit = CONTEXT_LIMIT
+    while True:
+        if view is not None and has_board(view):
+            rest = store_lines(view, limit - head_size - 1)
+        else:
+            rest = board_lines(team, limit - head_size - 1)
+        context = fit_lines([*lines, *rest], limit)
+        size = len(hook_payload(context).encode("utf-8")) + 1  # the newline say() adds
+        if not claude or size <= BYTE_BUDGET or limit <= 0:
+            return context
+        limit = limit * BYTE_BUDGET // size
 
 
 def cmd_context(args: list[str]) -> int:
@@ -487,11 +574,10 @@ def cmd_context(args: list[str]) -> int:
         else:
             latest = (run_line(line) if line and line.get("runner") else "") or "no run yet"
         lines.append(f"{member} {one_line(decl.get('status', 'active'), WORD_WIDTH)} {label}: {latest}")
-    lines += store_lines(view) if view is not None and has_board(view) else board_lines(team)
     # every line is masked and capped by one_line before it is kept whole; fit_lines never cuts inside one
-    context = fit_lines(lines, CONTEXT_LIMIT)
+    context = fit_context(lines, view, team, "--claude" in args)
     if "--claude" in args:
-        say(dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}))
+        say(hook_payload(context))
     else:
         say(context)
     return 0

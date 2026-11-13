@@ -10,6 +10,9 @@ import sys
 import tempfile
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import writable_copy  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / '.agents'
 MANIFEST = '.agents/team/.pack-files'
@@ -29,10 +32,11 @@ class UpdateTest(unittest.TestCase):
         self.env.update(TMPDIR=str(self.scratch), PYTHONDONTWRITEBYTECODE='1',
                         WOUF_SECRET_BACKEND='file', WOUF_SECRET_DIR=str(self.root / 'secrets'))
         for directory in (self.project, self.source):
-            shutil.copytree(PACK, directory / '.agents', ignore=shutil.ignore_patterns('__pycache__'))
+            writable_copy(PACK, directory / '.agents', ignore=shutil.ignore_patterns('__pycache__'))
             self.git(directory, 'init', '-q')
             self.git(directory, 'config', 'user.name', 'Test')
             self.git(directory, 'config', 'user.email', 'test@example.invalid')
+        self.write(self.project, '.agents/VERSION', '0.1.0\n')
         self.write(self.project, '.agents/team/config.ini', CONFIG)
         self.write(self.project, '.agents/skills/retired.py', 'old = True\n')
         self.write(self.project, MANIFEST, '\n'.join(self.managed(self.project)) + '\n')

@@ -25,8 +25,8 @@ You do the briefed work, and only that: code, a document, an analysis, a piece o
 - Read `in/LOGIN.md` first: your practice, this task's history and the knowledge for it, staged fresh for every run (nothing of an earlier run's chat carries over). Search more with `log ask "words"`.
 - Test first for code: write or update the failing test, then the change. Never skip or disable a test to get green.
 - Keep the diff to the scope. Deliver exactly what the brief asks.
-- Commit messages end with the trailer `Agent: WOUF Worker` (the human stays the author).
-- Log `started` at the beginning and one outcome line at the end with `bin/log`.
+- Commit messages end with the trailer `Agent: WOUF Worker` unless the brief or the team's rules forbid trailers, and then the brief wins (the human stays the author).
+- Log `started` at the beginning and one outcome line at the end with `bin/log`: `done` when the return block says ready-for-review, `blocked` when it says blocked.
 
 ## Return block
 

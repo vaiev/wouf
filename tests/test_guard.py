@@ -10,8 +10,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / ".agents" / "bin" / "guard"
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class GuardTest(unittest.TestCase):
@@ -81,6 +88,46 @@ class GuardTest(unittest.TestCase):
         ):
             with self.subTest(cmd=cmd):
                 self.assert_blocked(self.run_guard("check-command", cmd))
+
+    def test_destructive_push_and_rm_forms(self) -> None:
+        # T-0145: forms after git global options, refspec forms, deletes and mirror; rm of home in quoted forms.
+        blocked = {
+            "force push to main": (
+                "git -C /x push --force origin main", "git -c a=b push -f origin main",
+                "git --no-pager -C x push -f origin master", "git push origin +main", "git push origin +HEAD:main",
+                "git push -f origin HEAD:main", "git push --mirror origin", "echo `git push -f origin main`",
+                "git -C /x push -f origin main>/dev/null", "git -C /x push --repo=origin -f main",
+                'bash -c "git push -f origin main"', "x && git -C y push -f origin main",
+                'git -C "/tmp/a b" push -f origin main', "git -C '/tmp/a b' push -f origin main",
+                "echo $(git -C /x push origin main -f)", "a; git --git-dir=/r/.git push -f origin main",
+                "a | git --work-tree=/w push -f origin main", "git --git-dir /r/.git push -f origin main",
+                "git --bare push -f origin main", "git -p push -f origin main", "git --namespace=n push -f origin main",
+                "echo `git -C /x push origin main -f`"),
+            "deleting main": (
+                "git push origin :main", "git push --delete origin main", "git push -d origin master",
+                "git push -dv origin main", "git -C /x push --repo=origin --delete main"),
+            "recursive delete of / or home": (
+                "rm -rf $HOME/", 'rm -rf "$HOME"', "rm -rf ${HOME}", "rm -rf ~/", "rm -rf ~", "rm -rf /",
+                "bash -c 'rm -rf \"$HOME\"'", "sh -c 'cd /; rm -rf \"$HOME\"'", 'bash -c "rm -rf \\"$HOME\\""',
+                "bash -c \"rm -rf '$HOME'\"", "echo $(rm -rf ~)"),
+        }
+        for why, commands in blocked.items():
+            for cmd in commands:
+                with self.subTest(cmd=cmd):
+                    result = self.run_guard("check-command", cmd)
+                    self.assert_blocked(result)
+                    self.assertIn(why, result.stderr)
+        for cmd in (
+            "git push origin main", "git push -u origin werkstatt/T-0138", "git push origin refs/notes/wouf-receipts",
+            "git -C ref/wouf push origin HEAD:refs/heads/werkstatt/T-1", "git push --force origin werkstatt/T-1",
+            "git push --force-with-lease origin feature", "git log --oneline main", "rm -rf build/",
+            'rm -rf "$S/gtest"', "rm -fr ~/project", "git push -f origin feature 2>&1", 'echo "$X; env"',
+            "printf '%s' 'git' push origin :main", 'bash -c "echo it\'s"', "git push -f origin feature\ngit log main",
+            "git push -f origin werkstatt/main-fix", "git push --follow-tags origin main",
+            "git push origin main --dry-run",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.run_guard("check-command", cmd).returncode, 0)
 
     def test_project_deny_list_extends_the_rules(self) -> None:
         (self.team / "guard-deny.txt").write_text(

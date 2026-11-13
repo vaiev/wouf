@@ -11,6 +11,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.agents/bin'))
 from teamlib import bwrap, status
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class BwrapDoctorTest(unittest.TestCase):

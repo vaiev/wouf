@@ -187,7 +187,7 @@ class LeanPackTest(unittest.TestCase):
         areas = re.findall(r"^### (.+)$", now, re.M)
         self.assertEqual([a.split(":")[0] for a in areas if a[:2] in ("A:", "B:", "C:", "D:", "E:")], list("ABCDE"))
         bodies = {part[0]: part for part in re.split(r"^### ", now, flags=re.M)[1:]}
-        for area, words in (("A", ("boot", "receipt", "SSH", "gate cache")),
+        for area, words in (("A", ("boot", "run-record", "SSH", "gate cache")),
                             ("B", ("event log", "`team task", "`team ask", "lessons")),
                             ("C", ("`team stats", "tiers", "`team batch", "`team goal", "Session hooks", "staged")),
                             ("D", ("companion",)),
@@ -241,6 +241,12 @@ class OpenSourceFilesTest(unittest.TestCase):
         ci = (ROOT / ".github" / "workflows" / "docs-ci.yml").read_text(encoding="utf-8")
         self.assertIn("python3 scripts/test-parallel.py", ci)
         self.assertIn("contents: read", ci)
+        self.assertIn("schedule:", ci)
+        self.assertIn("workflow_dispatch:", ci)
+        pr_matrix = re.search(r"github\.event_name == 'pull_request' && fromJSON\('([^']+)'\)", ci)
+        self.assertIsNotNone(pr_matrix)
+        self.assertEqual(pr_matrix.group(1), '["3.9"]')
+        self.assertNotIn('"3.12"', pr_matrix.group(1))
         self.assertNotRegex(ci, r"uses: [^@\n]+@v\d")
 
 

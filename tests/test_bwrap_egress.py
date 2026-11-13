@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_bwrap_run import REAL, USABLE, bwrap_project  # noqa: E402
 from test_team_cli import KEY  # noqa: E402
+from support import TIME_FACTOR  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".agents" / "bin"))
 from teamlib import bwrap, engine  # noqa: E402
@@ -131,6 +132,38 @@ class HandOffTest(unittest.TestCase):
         self.assertEqual(bwrap.BOT_PROXY["NO_PROXY"], engine.EGRESS_ENV["NO_PROXY"])
         self.assertEqual(bwrap.BOT_PROXY["no_proxy"], "localhost,127.0.0.1,::1")
 
+    def test_a_private_pair_reaches_the_proxy_sandbox_only(self) -> None:
+        # T-0132: [egress] private goes to the proxy's sandbox as --private; the bot's loopback variables stay.
+        pair = "127.0.0.1:11434"
+        engine.EGRESS[:] = [lambda *args: {"allow": ["pypi.org"], "private": [pair], "source": str(PROXY)}]
+        got = engine.egress_prepare(self.ini, {}, {}, "bwrap", "fake")
+        self.assertEqual(got["private"], [pair])
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ctl").mkdir()
+            staged = bwrap.egress_stage(Path(tmp))
+            self.assertEqual(staged["bwrap_egress"], {"allow": ["pypi.org"], "private": [pair]})
+            self.assertEqual(staged["egress"]["private"], [pair], "run.json records the pairs as egress.private")
+            argv = bwrap.proxy_argv({"stage": tmp, "bwrap_egress": staged["bwrap_egress"]})
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--private"], [pair])
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--allow"], ["pypi.org"])
+        self.assertEqual(bwrap.BOT_PROXY["NO_PROXY"], "localhost,127.0.0.1,::1", "the bot's loopback stays")
+
+    def test_without_a_pair_the_proxy_sandbox_gets_no_private_option(self) -> None:
+        engine.egress_prepare(self.ini, {}, {}, "bwrap", "fake")  # the chosen list has no private key at all
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "ctl").mkdir()
+            staged = bwrap.egress_stage(Path(tmp))
+            self.assertEqual(staged["bwrap_egress"]["private"], [])
+            self.assertEqual(staged["egress"]["private"], [])
+            argv = bwrap.proxy_argv({"stage": tmp, "bwrap_egress": staged["bwrap_egress"]})
+        self.assertNotIn("--private", argv)
+
+    def test_the_egress_record_of_a_bwrap_run_is_not_a_container_proxy(self) -> None:
+        # run.json's egress in bwrap mode is a record only: ending a failed run asks no engine and needs no names.
+        with tempfile.TemporaryDirectory() as tmp:
+            engine.egress_end({"mode": "bwrap", "stage": tmp, "egress": {"allow": [], "private": []}}, box=True)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
     def test_bridge_stays_refused_and_egress_is_not(self) -> None:
         p = bwrap_project("bridge")
         self.addCleanup(p.close)
@@ -222,7 +255,9 @@ class EgressProject:
                 found.append(int(entry.name))
         return found
 
-    def assert_nothing_left(self, wait: float = 0) -> None:
+    def assert_nothing_left(self, wait: float = 5 * TIME_FACTOR) -> None:
+        """No proxy process and no socket of this stage remain, waiting up to `wait` seconds for a proxy that is
+        still exiting (a loaded host is slow to reap it); a leaked proxy never exits, so any wait still catches it."""
         deadline = time.monotonic() + wait
         while (self.proxies() or os.path.lexists(self.sock)) and time.monotonic() < deadline:
             time.sleep(0.2)
@@ -264,6 +299,22 @@ class BwrapEgressTest(EgressProject, unittest.TestCase):
         self.assertIn("host=***.example", log)
         self.assertNotIn(KEY, log + result.stdout + result.stderr)
         self.assertFalse((self.stage / "egress" / "proxy.log").exists(), "the raw log is removed")
+        self.assertEqual(json.loads((self.stage / "run.json").read_text())["egress"]["private"], [])
+        self.assert_nothing_left()
+
+    def test_a_private_pair_is_in_run_json_and_reaches_the_proxy(self) -> None:
+        # T-0132: run.json holds [egress] private under egress.private in bwrap mode as in container mode.
+        pairs = ["127.0.0.1:11434", "[::1]:8080"]
+        with self.p.config.open("a") as handle:
+            handle.write(f"private = {', '.join(pairs)}\n")
+        result = self.p.team("run", "worker", "T-1", "--brief", str(self.brief()))
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn(f"private host:port of this run (fake): {' '.join(pairs)}", result.stderr)
+        spec = json.loads((self.stage / "run.json").read_text())
+        self.assertEqual(spec["egress"]["private"], pairs)
+        self.assertEqual(spec["bwrap_egress"]["private"], pairs)
+        argv = self.recorded()[0][0]["argv"]
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "--private"], pairs)
         self.assert_nothing_left()
 
     def test_the_proxy_gets_no_key_and_only_the_network(self) -> None:

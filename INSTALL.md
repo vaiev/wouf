@@ -202,8 +202,8 @@ Finally, remove the lines this install added to `AGENTS.md`, `CLAUDE.md`, `GEMIN
 
 ## Existing agent setups
 
-If the folder already has agents, rules or skills, do not rewrite them. The team only adds `.agents/START.md`, `rules.md`, `roles/`, `skills/`, `bin/`, `bots/`, `connectors/` and `team/`, plus one line in `AGENTS.md`. Existing rules keep working; where they contradict `.agents/rules.md`, ask the human which one wins and write the answer into `.agents/team/decisions.md`.
+If the folder already has agents, rules or skills, do not rewrite them. The team only adds `.agents/START.md`, `VERSION`, `rules.md`, `roles/`, `skills/`, `bin/`, `bots/`, `connectors/`, `upgrade/` and `team/`, plus one line in `AGENTS.md`. Existing rules keep working; where they contradict `.agents/rules.md`, ask the human which one wins and write the answer into `.agents/team/decisions.md`.
 
 ## Move to another computer or share
 
-On the old computer: `.agents/bin/team export` (bots and settings, no data, no secrets; `--with-data` adds the readable projections `board.md`, `decisions.md`, `schedule.md`, `knowledge` and `logs`, not raw event logs, active flows, goals or practice files). On the new one: steps 1 to 3, then `.agents/bin/team import <file>` (it only lists what it would add) and `.agents/bin/team import <file> --apply` to write it, copy the needed settings from `team/import/<archive>/` by hand, and run step 4 (imported bots arrive `proposed`; activate and create them after the human's yes).
+On the old computer: `.agents/bin/team export` (bots and settings, no data, no secrets; `--with-data` adds `board.md`, `decisions.md`, `schedule.md`, `knowledge`, `logs` and the bots' run records, and a migration snapshot of the event log, flows, goals, the lead's briefs and the practice files, which import applies only to a team without events). On the new one: steps 1 to 3, then `.agents/bin/team import <file>` (it only lists what it would add) and `.agents/bin/team import <file> --apply` to write it, copy the needed settings from `team/import/<archive>/` by hand, and run step 4 (imported bots arrive `proposed`; activate and create them after the human's yes).

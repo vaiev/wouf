@@ -13,10 +13,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / ".agents" / "bin"))
-from teamlib import bwrap  # noqa: E402
+from teamlib import bwrap, taskstore  # noqa: E402
 
 # The mount table of PLAN T-0060, written out here on its own so the test does not trust the module's constants.
 HOST_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
@@ -309,6 +310,221 @@ class BwrapIsolationTest(unittest.TestCase):
                         "/home", "/root", "/run/user", runtime)
         self.assertEqual(done.stdout, "END\n", done.stderr)
 
+
+class TaskBindsTest(unittest.TestCase):
+    """bwrap.task_binds (plan T-0167, option B) alone, no bwrap needed: one task's storage and the login storage."""
+
+    def test_the_three_task_folders_are_bound_writable_and_login_only_when_given(self) -> None:
+        stage = Path("/env/worker/tasks/T-1")
+        own = ["--bind", "/env/worker/tasks/T-1/box/work", "/bot/tasks/T-1",
+               "--bind", "/env/worker/tasks/T-1/box/home", "/bot/home",
+               "--bind", "/env/worker/tasks/T-1/box/logs", "/bot/logs"]
+        self.assertEqual(bwrap.task_binds(stage, "T-1", None), own)
+        self.assertEqual(bwrap.task_binds(str(stage), "T-1", Path("/env/worker/login")),
+                         own + ["--bind", "/env/worker/login", "/bot/login"])
+        self.assertNotIn("/bot", bwrap.task_binds(stage, "T-1", "/env/worker/login"), "/bot itself stays private")
+
+    def test_it_makes_no_file_and_starts_no_process(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            stage, login = Path(tmp) / "env" / "worker" / "tasks" / "T-1", Path(tmp) / "env" / "worker" / "login"
+            with mock.patch.object(subprocess, "Popen", side_effect=AssertionError("a process was started")), \
+                    mock.patch.object(os, "fork", side_effect=AssertionError("a process was started")):
+                bwrap.task_binds(stage, "T-1", login)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_a_task_id_that_could_name_another_path_is_refused(self) -> None:
+        for task in ("../T-2", "T-1/../../home", "/bot", "", ".", "..", ".hidden", "-x", "a..b", "x/y", "T-1\n"):
+            with self.subTest(task=task):
+                with self.assertRaises(ValueError):
+                    bwrap.task_binds("/env/worker/tasks/T-1", task, None)
+
+
+def task_storage(env: Path, task: str, token: str) -> tuple[Path, dict]:
+    """The stage of one task of the member worker under env, as option B lays it out, with a canary in each of its
+    three folders; and its binds without the old member-wide box."""
+    stage = env / "worker" / "tasks" / task
+    stage.parent.mkdir(parents=True, exist_ok=True)
+    binds = run_tree(stage)
+    del binds["box"]
+    for sub in ("work", "home", "logs"):
+        (stage / "box" / sub).mkdir(mode=0o700)
+        (stage / "box" / sub / f"canary-{task}-{sub}").write_text(f"canary-{token}-{sub}\n")
+    return stage, {name: str(path) for name, path in binds.items()}
+
+
+# What a sandbox of one task tries against another task ($1) of the same member: list /bot and every way up or
+# around (.., /proc/*/root, /proc/*/cwd), read every file under /bot and /tmp, find a canary or the other id
+# anywhere, and open the other task's paths by name. Errors go nowhere, so stdout holds only what was reached.
+PROBE = r"""b=$1
+for p in /bot /bot/tasks /bot/home/.. /bot/logs/.. /bot/tasks/.. /bot/login/.. /proc/self/root/bot/tasks \
+         /proc/[0-9]*/root/bot /proc/[0-9]*/root/bot/tasks /proc/[0-9]*/cwd; do
+  echo "LIST $p"; ls -a "$p" 2>/dev/null
+done
+echo FILES
+find -H /bot /tmp /proc/[0-9]*/root/bot -type f 2>/dev/null | while IFS= read -r f; do cat "$f" 2>/dev/null; done
+echo NAMES
+find / \( -path /proc -o -path /sys -o -path /dev -o -path /usr \) -prune -o \( -name "*$b*" -o -name 'canary-*' \) \
+  -print 2>/dev/null
+echo GUESSES
+for d in "/bot/tasks/$b" "/bot/home/../tasks/$b" "/bot/tasks/../tasks/$b" /proc/[0-9]*/root/bot/tasks/"$b"; do
+  ls -a "$d" 2>/dev/null
+done
+for sub in work home logs; do
+  for d in "/bot/tasks/$b" /bot/home /bot/logs /bot/home/../home /proc/[0-9]*/root/bot/home \
+           /proc/[0-9]*/root/bot/logs; do
+    cat "$d/canary-$b-$sub" 2>/dev/null
+  done
+done
+echo END
+"""
+# A task's own three folders, written; $1 the task, $2 what to write.
+WRITE = (r'printf "%s\n" "work-$2" > "/bot/tasks/$1/written" && printf "%s\n" "home-$2" > /bot/home/written && '
+         r'printf "%s\n" "logs-$2" > /bot/logs/written && echo WROTE')
+# os.rename, as gnome-keyring replaces its keyring: a new file beside the old one, then one rename over it.
+RENAME = "import os, sys\nos.rename(sys.argv[1], sys.argv[2])\nprint('RENAMED')\n"
+
+
+@unittest.skipUnless(USABLE, "bwrap is not installed or cannot start a sandbox here (user namespaces)")
+class TaskIsolationTest(unittest.TestCase):
+    """Option B against a real bwrap: two task storages of one member, each run in its own sandbox. A run sees its
+    own folder, HOME and receipts, never another task's, before, after or at the same time; the login storage alone
+    is shared."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name)
+        env = self.base / "env"
+        hexes = secrets.token_hex(4)
+        # Two task ids of one member, with ".", "_" and "-", unlikely to turn up anywhere by chance.
+        self.a, self.b = f"T-{hexes}_a.1", f"T-{hexes}_b.1"
+        self.tokens = {self.a: "a-" + secrets.token_hex(8), self.b: "b-" + secrets.token_hex(8)}
+        self.stages, self.binds = {}, {}
+        for task in (self.a, self.b):
+            self.stages[task], self.binds[task] = task_storage(env, task, self.tokens[task])
+        self.login = env / "worker" / "login"
+        self.login.mkdir(mode=0o700)
+
+    def argv(self, task: str, script: str, *args: str, login: bool = True) -> list[str]:
+        """The sandbox of one run of task: the run's usual binds without the old box, then task_binds."""
+        box = bwrap.box_argv(self.binds[task], "none")
+        self.assertEqual(box[-1], "--")
+        binds = bwrap.task_binds(self.stages[task], task, self.login if login else None)
+        return [*box[:-1], *binds, "--", "/bin/sh", "-c", "PATH=/usr/bin:/bin; export PATH\n" + script, "sh", *args]
+
+    def run_in(self, task: str, script: str, *args: str, login: bool = True) -> subprocess.CompletedProcess:
+        done = subprocess.run(self.argv(task, script, *args, login=login), capture_output=True, text=True,
+                              timeout=120, cwd=self.base, stdin=subprocess.DEVNULL)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done
+
+    def written(self, task: str) -> dict:
+        box = self.stages[task] / "box"
+        return {sub: (box / sub / "written").read_text() for sub in ("work", "home", "logs")
+                if (box / sub / "written").exists()}
+
+    def assert_alone(self, me: str, other: str, login: bool = True) -> None:
+        """A run of me reaches its own canaries and its earlier writes, and nothing of other by any path."""
+        done = self.run_in(me, PROBE, other, login=login)
+        out = done.stdout
+        self.assertTrue(out.endswith("END\n"), done.stderr)
+        listing = out.split("LIST /bot\n", 1)[1].split("LIST ", 1)[0].split()
+        self.assertEqual(sorted(listing), sorted([".", "..", "home", "logs", "tasks"] + (["login"] if login else [])))
+        self.assertEqual(out.split("LIST /bot/tasks\n", 1)[1].split("LIST ", 1)[0].split(), [".", "..", me])
+        self.assertIn(f"LIST /proc/self/root/bot/tasks\n.\n..\n{me}\n", out, "the /proc/*/root path works")
+        for sub in ("work", "home", "logs"):
+            self.assertIn(f"canary-{self.tokens[me]}-{sub}\n", out, f"its own {sub} is readable")
+            self.assertIn(f"/canary-{me}-{sub}\n", out.split("NAMES\n", 1)[1], f"its own {sub} is found")
+        self.assertNotIn(other, out)
+        self.assertNotIn(self.tokens[other], out)
+
+    def test_a_task_never_reaches_another_tasks_folder_home_or_receipts_one_after_the_other(self) -> None:
+        for task in (self.a, self.b):
+            self.assertEqual(self.run_in(task, WRITE, task, self.tokens[task]).stdout, "WROTE\n")
+        for me, other in ((self.a, self.b), (self.b, self.a)):
+            with self.subTest(me=me):
+                self.assert_alone(me, other)
+                self.assert_alone(me, other, login=False)
+        # The three folders keep what each run wrote after its sandbox ended, and a later run of the task reads it.
+        for task in (self.a, self.b):
+            self.assertEqual(self.written(task), {sub: f"{sub}-{self.tokens[task]}\n" for sub in
+                                                  ("work", "home", "logs")})
+            again = self.run_in(task, 'cat "/bot/tasks/$1/written" /bot/home/written /bot/logs/written', task)
+            self.assertEqual(again.stdout, "".join(f"{sub}-{self.tokens[task]}\n" for sub in ("work", "home", "logs")))
+
+    def test_a_task_never_reaches_another_task_running_at_the_same_time(self) -> None:
+        # B writes into its three folders, says it is ready, then waits inside its task folder until told to stop.
+        live = (WRITE + ' >/dev/null && touch "/bot/tasks/$1/ready" && cd "/bot/tasks/$1" && n=0\n'
+                'while [ ! -e stop ] && [ $n -lt 900 ]; do sleep 0.1; n=$((n+1)); done; echo STOPPED')
+        b = subprocess.Popen(self.argv(self.b, live, self.b, self.tokens[self.b]), stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, cwd=self.base, stdin=subprocess.DEVNULL)
+        for step in (b.stdout.close, b.stderr.close, b.wait, b.kill):
+            self.addCleanup(step)
+        ready = self.stages[self.b] / "box" / "work" / "ready"
+        deadline = time.monotonic() + 60
+        while not ready.exists() and b.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertTrue(ready.exists(), b.stderr.read() if b.poll() is not None else "B never got ready")
+        try:
+            self.assertEqual(self.run_in(self.a, WRITE, self.a, self.tokens[self.a]).stdout, "WROTE\n")
+            self.assert_alone(self.a, self.b)
+            self.assertIsNone(b.poll(), "B ran all the while")
+        finally:
+            (self.stages[self.b] / "box" / "work" / "stop").touch()
+        out, err = b.communicate(timeout=60)
+        self.assertEqual((b.returncode, out), (0, "STOPPED\n"), err)
+        for task in (self.a, self.b):
+            self.assertEqual(self.written(task), {sub: f"{sub}-{self.tokens[task]}\n" for sub in
+                                                  ("work", "home", "logs")})
+
+    def test_the_login_folder_is_shared_and_a_rename_inside_it_succeeds(self) -> None:
+        shared = "login-" + secrets.token_hex(8)
+        put = self.run_in(self.a, 'mkdir -p /bot/login/keyrings && printf "%s\\n" "$1" > /bot/login/shared && '
+                                  'printf old > /bot/login/keyrings/login.keyring && echo PUT', shared)
+        self.assertEqual(put.stdout, "PUT\n")
+        got = self.run_in(self.b, "cat /bot/login/shared /bot/login/keyrings/login.keyring")
+        self.assertEqual(got.stdout, f"{shared}\nold")
+        renamed = self.run_in(self.b, 'printf new > /bot/login/keyrings/login.keyring.TMP1 && python3 -I -c "$1" '
+                                      '/bot/login/keyrings/login.keyring.TMP1 /bot/login/keyrings/login.keyring',
+                              RENAME)
+        self.assertEqual(renamed.stdout, "RENAMED\n")
+        self.assertEqual(self.run_in(self.a, "cat /bot/login/keyrings/login.keyring").stdout, "new")
+        self.assertEqual(sorted(p.name for p in (self.login / "keyrings").iterdir()), ["login.keyring"])
+        self.assertEqual((self.login / "shared").read_text(), f"{shared}\n")
+
+    def test_a_login_folder_planted_as_a_link_to_the_task_folder_gets_no_copy_back(self) -> None:
+        """Review r1 of T-0167-2: a run of task B links /bot/login/.codex to task A's folder, where A keeps a file
+        of the login file's name, and /bot/login/.gemini to A's out/. A's run with the login steps as run.py
+        writes them copies nothing through either before its CLI and has no step after it (review r3: no sandbox
+        writes /bot/login); nothing lands in its task folder, the CLI's files stay in its HOME, and each step says
+        so on stderr."""
+        paths = [".codex/auth.json", ".gemini/oauth.json"]
+        before, after = taskstore.login_link_steps(paths)
+        self.assertEqual(after, [])
+        plant = 'ln -s "/bot/tasks/$1" /bot/login/.codex && ln -s "/bot/tasks/$1/out" /bot/login/.gemini && echo OK'
+        self.assertEqual(self.run_in(self.b, plant, self.a).stdout, "OK\n")
+        work, home = self.stages[self.a] / "box" / "work", self.stages[self.a] / "box" / "home"
+        (work / "out").mkdir()
+        (work / "auth.json").write_text("task file\n")
+
+        def listing() -> dict:
+            return {str(p.relative_to(work)): os.readlink(p) if p.is_symlink() else p.read_bytes() if p.is_file()
+                    else "dir" for p in sorted(work.rglob("*"))}
+
+        planted = listing()
+        # The CLI signs in: each file new, written beside and renamed over its place, as gnome-keyring does.
+        cli = ('r=$1; shift; for f in "$@"; do mkdir -p "$HOME/${f%/*}"; printf "secret %s\\n" "$f" > "$HOME/$f.tmp"; '
+               'python3 -I -c "$r" "$HOME/$f.tmp" "$HOME/$f" >/dev/null; done')
+        script = "\n".join(["set -e", "export HOME=/bot/home", *before, cli, "set +e", *after, "echo DONE"])
+        done = self.run_in(self.a, script, RENAME, *paths)
+        self.assertEqual(done.stdout, "DONE\n", done.stderr)
+        self.assertEqual(listing(), planted)  # nothing new or changed in the task folder, out/ included
+        for path in paths:
+            self.assertFalse((home / path).is_symlink(), path)
+            self.assertEqual((home / path).read_text(), f"secret {path}\n")
+        self.assertEqual(sorted(p.name for p in self.login.iterdir()), [".codex", ".gemini"])
+        self.assertEqual(done.stderr.splitlines(), [f"wouf: login path {path}: a folder above it in HOME or "
+                                                    "/bot/login is a link; skipped" for path in paths])
 
 if __name__ == "__main__":
     unittest.main()

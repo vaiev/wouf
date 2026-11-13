@@ -11,6 +11,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, writable_copy  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / ".agents" / "bin" / "project"
 # The sections .agents/skills/brief.md asks of every brief, filled.
@@ -18,12 +21,16 @@ SECTIONS = ("Acceptance criteria: the endpoint answers 200\nScope: src/api\nOut 
             "Constraints: stdlib only\nExpected output: commits and the return block\n")
 
 
+def setUpModule() -> None:
+    isolate_wouf_env(secret_store=True)
+
+
 class ProjectTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         self.team = self.tmp / "team"
-        shutil.copytree(ROOT / ".agents" / "team", self.team)
+        writable_copy(ROOT / ".agents" / "team", self.team)
         self.repo = self.tmp / "repo"
         for rel in ("src/api/status.py", "src/api/routes.py", "src/auth/login.py", "docs/readme.md",
                     "web/billing/invoice.ts", "node_modules/auth/x.js"):
@@ -248,7 +255,7 @@ class ProjectTest(unittest.TestCase):
         for section in ("Acceptance criteria", "Scope", "Out of scope", "Inputs", "Constraints", "Expected output"):
             self.assertIn(f"{section}: TO FILL", done.stdout)
         plan = self.run_project("brief", "plan the billing migration in packages", "--repo", str(self.repo)).stdout
-        self.assertNotIn("Paths:", plan)
+        self.assertIn("Paths: web/billing/**", plan)
 
     def test_peer_and_flow_text_is_shown_visibly(self) -> None:
         self.flow("T-4", "blocked", [{"kind": "worker", "outcome": "done", "status": "blocked",
@@ -299,12 +306,41 @@ class ProjectTest(unittest.TestCase):
 
     def test_brief_knows_main_classes(self) -> None:
         done = self.run_project("brief", "plan the billing migration in packages", "--repo", str(self.repo))
-        self.assertEqual(self.fields(done.stdout)["Class"], "plan")
+        self.assertEqual(self.fields(done.stdout)["Class"], "standard")
 
     def test_an_unknown_task_is_an_error(self) -> None:
         done = self.run_project("phase", "T-404")
         self.assertEqual(done.returncode, 2)
         self.assertIn("T-404", done.stderr)
+
+    # ------------------------------------------------------------ classes from config.ini
+
+    def configure(self, extra: str) -> None:
+        with (self.team / "config.ini").open("a", encoding="utf-8") as handle:
+            handle.write(extra)
+
+    def test_check_accepts_a_configured_class(self) -> None:
+        brief = self.tmp / "b.md"
+        brief.write_text("Task: T-1\nClass: docs\nPaths: docs/**\nObjective: write the guide\n" + SECTIONS)
+        done = self.run_project("check", str(brief))
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("one of mechanical, standard, complex, security, decision, analysis, plan", done.stdout)
+        self.configure("\n[class.docs]\ntier = strong\n")
+        done = self.run_project("check", str(brief))
+        self.assertEqual(done.returncode, 0, done.stdout)
+
+    def test_brief_guesses_a_configured_class_after_the_built_ins(self) -> None:
+        goals = {"update the docs readme": "standard", "fix a typo in the docs readme": "mechanical",
+                 "refactor the docs readme": "complex"}
+
+        def guesses() -> dict:
+            return {g: self.fields(self.run_project("brief", g, "--repo", str(self.repo)).stdout)["Class"]
+                    for g in goals}
+        self.assertEqual(guesses(), goals)
+        self.configure("\n[classify]\nkeywords.docs = guide, readme\n")
+        self.assertEqual(guesses(), goals)
+        self.configure("\n[class.docs]\ntier = strong\n")
+        self.assertEqual(guesses(), {**goals, "update the docs readme": "docs"})
 
 
 

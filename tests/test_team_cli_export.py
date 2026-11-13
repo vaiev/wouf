@@ -37,8 +37,8 @@ class PlanClassTest(unittest.TestCase):
         self.assertEqual((plan["bot"], plan["tier"], plan["reviews"], plan["scout"], plan["model"]),
                          ("planner", "strong", 0, True, None))
         decision = self.team.class_options(self.ini, "decision")
-        self.assertEqual({k: v for k, v in plan.items() if k not in ("bot", "scout")},
-                         {k: v for k, v in decision.items() if k not in ("bot", "scout")}, "like decision")
+        self.assertEqual({k: v for k, v in plan.items() if k not in ("bot", "scout", "steps")},
+                         {k: v for k, v in decision.items() if k not in ("bot", "scout", "steps")}, "like decision")
 
     def test_a_team_sets_the_model_of_the_plan_class(self) -> None:
         self.ini.read_string("[class.plan]\nmodel = some-cheaper-model\n")
@@ -284,7 +284,7 @@ class ContextTest(unittest.TestCase):
                         if ln.startswith(("- may we", "question may we")):
                             self.assertTrue(ln.endswith("go on?"), ln)
                     if rows >= 30:
-                        self.assertRegex(text.splitlines()[-1], r"^… \d+ more lines?$")
+                        self.assertRegex(text.splitlines()[-1], r"^\d+ more rows: team/board\.md$")
 
 
 def bytes_to_tokens(*texts: str) -> float:

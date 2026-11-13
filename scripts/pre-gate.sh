@@ -16,4 +16,5 @@ if [ -n "${WOUF_BASE:-}" ] && [ -n "${WOUF_HEAD:-}" ]; then
 else
     echo "Complexity ratchet skipped: WOUF_BASE and WOUF_HEAD are not set (local run)."
 fi
+python3 scripts/mdlint.py
 python3 scripts/test-parallel.py

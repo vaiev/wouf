@@ -28,6 +28,9 @@ from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, TIME_FACTOR, writable_copy  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / ".agents"
 KEY = "alpha-secret-value-123"
@@ -138,6 +141,10 @@ def engine() -> str | None:
     return None
 
 
+def setUpModule() -> None:
+    isolate_wouf_env()
+
+
 class Project:
     """A throwaway project folder with a copy of the pack, a git repository and a secret store."""
 
@@ -148,7 +155,7 @@ class Project:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / f"proj-{uuid.uuid4().hex[:6]}"
         self.root.mkdir()
-        shutil.copytree(SOURCE, self.root / ".agents", ignore=shutil.ignore_patterns("__pycache__"))
+        writable_copy(SOURCE, self.root / ".agents", ignore=shutil.ignore_patterns("__pycache__"))
         self.config = self.root / ".agents" / "team" / "config.ini"
         self.config.write_text(CONFIG.format(name=name, runner=runner, mode=mode, engine=engine_name,
                                              fake=FAKE_B64, timeout=timeout))
@@ -233,6 +240,22 @@ def team_module():
     module = module_from_spec(spec_from_loader("wouf_team", loader))
     loader.exec_module(module)
     return module
+
+
+class UsageTest(unittest.TestCase):
+    def test_help_names_reason_on_every_status_change_and_the_relative_repo_path(self) -> None:
+        p = Project()
+        self.addCleanup(p.close)
+        for topic in ("task", "run"):
+            done = p.team("help", topic)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertIn("team task start|working|block|review|done|todo T [--reason TEXT]", done.stdout)
+            self.assertIn("--reason on every status change", done.stdout)
+            self.assertIn("team run ID TASK --repo PATH[@REF]", done.stdout)
+            self.assertIn("a relative PATH is read from the folder team is called in", done.stdout)
+        refused = p.team("run", "worker")
+        self.assertEqual(refused.returncode, 2)
+        self.assertIn("[--repo [REF | PATH[@REF]]] (a relative PATH from this folder)", refused.stderr)
 
 
 class WayBackTest(unittest.TestCase):
@@ -810,6 +833,22 @@ class HostRunTest(unittest.TestCase):
     def output(self, task: str, member: str = "worker") -> str:
         return (self.p.root / ".agents" / "team" / "env" / member / "tasks" / task / "output.log").read_text()
 
+    def test_run_receipt_uses_log_override_with_team_dir(self) -> None:
+        self.p.env["WOUF_TEAM_DIR"] = str(self.p.root / ".agents" / "team")
+        self.p.env["WOUF_LOG_DIR"] = str(self.p.root / "other-logs")
+        result = self.p.team("run", "worker", "T-1", "--brief", str(self.p.brief))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = subprocess.run([sys.executable, str(self.p.root / ".agents" / "bin" / "log"), "task", "T-1"],
+                             capture_output=True, text=True, env=self.p.env)
+        self.assertIn("lead T-1 started", log.stdout)
+        self.assertIn("lead T-1 done | worker returned", log.stdout)  # the run's end receipt (usage) too
+        del self.p.env["WOUF_LOG_DIR"]
+        result = self.p.team("run", "worker", "T-2", "--brief", str(self.p.brief))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = subprocess.run([sys.executable, str(self.p.root / ".agents" / "bin" / "log"), "task", "T-2"],
+                             capture_output=True, text=True, env=self.p.env)
+        self.assertIn("lead T-2 started", log.stdout)
+
     def test_run_with_repo_brings_back_a_branch_and_masks_the_key(self) -> None:
         result = self.p.team("run", "worker", "T-1", "--brief", str(self.p.brief), "--repo")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -929,7 +968,7 @@ class HostRunTest(unittest.TestCase):
         started = time.monotonic()
         result = self.p.team("run", "worker", "T-7", "--brief", str(self.p.brief), "--repo", "--detach")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertLess(time.monotonic() - started, 5 * TIME_FACTOR)
         self.assertIn("team result worker T-7", result.stdout)
         done = self.p.team("result", "worker", "T-7", "--wait", "60")
         self.assertEqual(done.returncode, 0, done.stderr + done.stdout)
@@ -983,6 +1022,7 @@ class HostRunTest(unittest.TestCase):
         self.assertNotIn("commits are on branch", result.stdout)
         self.assertEqual(self.p.git("rev-parse", "wouf/T-10"), head)
 
+    @unittest.skipIf(os.geteuid() == 0, "as root, file modes do not make a host run's inputs read-only (docs/DESIGN.md)")
     def test_a_planner_run_returns_no_commits(self) -> None:
         (self.p.root / ".agents" / "team" / "env" / "planner").mkdir()
         shutil.copy(self.p.root / ".agents" / "team" / "env" / "worker" / "fake-cli.sh",
@@ -996,6 +1036,7 @@ class HostRunTest(unittest.TestCase):
         self.assertNotIn("commits are on branch", result.stdout)
         self.assertEqual(self.p.git("branch", "--list", "wouf/T-11"), "")
 
+    @unittest.skipIf(os.geteuid() == 0, "as root, file modes do not make a host run's inputs read-only (docs/DESIGN.md)")
     def test_a_planner_run_writes_only_out(self) -> None:
         env = self.p.root / ".agents" / "team" / "env" / "planner"
         env.mkdir()
@@ -1126,7 +1167,7 @@ class HostRunTest(unittest.TestCase):
         started = time.monotonic()
         result = self.p.team("run", "worker", "T-6", "--brief", str(self.p.brief))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertLess(time.monotonic() - started, 10)
+        self.assertLess(time.monotonic() - started, 10 * TIME_FACTOR)
         again = self.p.team("run", "worker", "T-6", "--brief", str(self.p.brief))
         self.assertEqual(again.returncode, 0, "an earlier time-out marker must not stick: " + again.stderr)
 

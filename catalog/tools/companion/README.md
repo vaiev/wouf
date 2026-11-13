@@ -63,23 +63,34 @@ share it.
 python3 companion.py showcase T-0019 -o out/ --brief briefs/T-0019.md --title "A parser in an hour"
 ```
 
-Exports one finished task, or an epic (the id `T-0019` takes every task named `T-0019-<n>`), as an offline replay
-the owner may publish: `out/showcase.json` and `out/showcase.html`, and nothing else. `showcase.py` registers the
-subcommand. It reads only what `team snapshot --json` and `team events --since SEQ --json` print, run as
-subprocesses of the pack's `bin/team`, and no file of the team folder. A task that is not `done` yet, an unknown
-id or a bad one writes nothing and exits 1. `--brief` names the task's brief (outside the team folder or not; the
-exporter reads only that file) for the objective and acceptance criteria; without it they are `null` and `[]`.
+Exports one finished task, or an epic, as an offline replay the owner may publish: `out/showcase.json` and
+`out/showcase.html`, and nothing else. `showcase.py` registers the subcommand.
+
+- **Sources:** it reads only what `team snapshot --json` and `team events --since SEQ --json` print, run as
+  subprocesses of the pack's `bin/team`, and no file of the team folder.
+- **Epic:** the id `T-0019` takes every package named `T-0019-<n>`.
+- **Runs:** each run belongs to its package, with its steps, gates, reviews and times. A run may carry its own id:
+  a review round `T.r<n>` (whose `n` is the review's round), a scout or research run `T.scout`, a fix round
+  `T-fix<n>`, or these combined. Such an id is never a package of its own, even when the store lists it as a task.
+- **Refusals:** a package that is not `done` yet, an unknown id or a bad one writes nothing and exits 1.
+- **Notes:** the output names what the store does not hold (a package without a review verdict). It also says when
+  the title had to be masked.
+
+**What a caller passes.** For an epic, which has no task of its own, pass `--brief` with `Objective:`, an
+`Acceptance criteria:` list and `Class:`, and `--title`. A file outside the team folder is fine, and the exporter
+reads only that file. Without `--brief` these fields are `null` and `[]`. For a single task, `class` and the title
+come from the task. `final_verdict` is never passed: it needs a review verdict for every package in the store.
 
 `showcase.json`, schema `wouf.showcase.v1` (a client ignores fields it does not know; a change of meaning is a new
 schema id):
 
 | Field | Content |
 |---|---|
-| `manifest` | ShowcaseManifest: `v` (`wouf.showcase.v1`), `task_id` (the task or epic), `title` (`--title`, else the task's title, else the epic's id), `class`, `objective`, `acceptance_criteria[]`, `started_at` and `completed_at` (UTC, the first event and the last `done`), `wall_duration_s`, `total_cost` (the snapshot's `cost_total` summed, two decimals, or `null`), `final_verdict` (`approve` when every task's last review approved, else the first other verdict, `null` without a review per task) |
+| `manifest` | ShowcaseManifest: `v` (always `wouf.showcase.v1`: a constant, never masked), `task_id` (the task or epic), `title` (`--title`, else the task's title, else the epic's id; masked like any value, and the output says so), `class` (the task's, else the brief's `Class:`), `objective`, `acceptance_criteria[]`, `started_at` and `completed_at` (UTC, the first event and the last `done`), `wall_duration_s`, `total_cost` (the snapshot's `cost_total` summed, two decimals, or `null`), `final_verdict` (`approve` when every package's last review approved, else the first other verdict, `null` when a package has no review, which the output names) |
 | `tasks[]` | `id`, `title`, `class`, `status` of each task in the selection |
-| `steps[]` | ReplayStep, one per event of the selection, by `seq`: `seq`, `at`, `task`, `kind` (`task.*`, `run.*`, `flow.step`, `phase.state`, `question.*`, `decision.recorded`, `merge.*`), `bot`, `outcome`, `what` (fixed words and short fields, a decision's title and reason; never a bot's own text or a question's text), `duration_s` (a finished run: the time since its bot's start on the task) |
-| `gates[]` | GateResult: `seq`, `at`, `task`, `status` (`green`, `red`, …) of each `gate` step |
-| `reviews[]` | ReviewVerdict: `seq`, `at`, `task`, `bot`, `runner`, `verdict`, `round` (1 for a task's first review) |
+| `steps[]` | ReplayStep, one per event of the selection, by `seq`: `seq`, `at`, `task` (the run's own id, such as `T-0019-13.r1`), `kind` (`task.*`, `run.*`, `flow.step`, `phase.state`, `question.*`, `decision.recorded`, `merge.*`), `bot`, `outcome`, `what` (fixed words and short fields, a decision's title and reason; never a bot's own text or a question's text), `duration_s` (a finished run: the time since its bot's start on the task) |
+| `gates[]` | GateResult: `seq`, `at`, `task` (the package), `status` (`green`, `red`, …) of each `gate` step, a fix round's included |
+| `reviews[]` | ReviewVerdict: `seq`, `at`, `task` (the package), `bot`, `runner`, `verdict`, `round` (the `n` of `T.r<n>`, else counted from 1). A review is a finished run with a verdict, by a reviewer bot or in a review round |
 | `artifacts` | ArtifactSummary: `tasks` (count), `paths` (claimed, relative), `branches` (the runs' refs that are no sha), `tokens` (input/cache read/cache write/output summed, or `null`) |
 | `time_saved_s` | the sum of the steps' `duration_s` minus `wall_duration_s`: what side-by-side runs saved; never below 0 |
 

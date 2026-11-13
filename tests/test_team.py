@@ -64,8 +64,10 @@ class SettingsTest(unittest.TestCase):
         # T-0019-29: comments only; every section, key and value is as on main (d0f8624).
         ini = settings()
         values = json.dumps({s: dict(ini[s]) for s in ini.sections()}, sort_keys=True)
+        # T-0126 (P01): one key added, `usage = builtin:claude` in [runner.claude]; nothing else changed.
+        # T-0167-2: `login_paths` for agy ships commented out, so it adds no key; the hash is the usage-only set.
         self.assertEqual(hashlib.sha256(values.encode()).hexdigest(),
-                         "651510142be7a4a67c5421dcc2b002f3e34e3bfa66fe96a626730ed6fc633759")
+                         "ce41812b6e40862f73ab34aa68262b4c7d8c7a67f616da0e82c327e426fae869")
         comments = "\n".join(ln for ln in read(TEAM / "config.ini").splitlines() if ln.startswith("#"))
         for phrase in ("[knowledge]", "sources =", "team ask", "[classify]", "security_globs", "keywords.<class>",
                        "team goal new"):
@@ -130,7 +132,7 @@ class BootAndRulesTest(unittest.TestCase):
     def test_start_can_be_switched_off(self) -> None:
         start = read(PACK / "START.md")
         self.assertIn('"without WOUF"', start)
-        self.assertIn("enabled = no", start)
+        self.assertNotIn("enabled = no", start, "no code reads an enabled setting (audit T-0158, fix 14)")
 
     def test_start_names_the_boot_steps_in_order(self) -> None:
         start = read(PACK / "START.md")

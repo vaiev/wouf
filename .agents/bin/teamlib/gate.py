@@ -9,15 +9,46 @@ import stat
 from teamlib.core import *  # noqa: F401,F403
 from teamlib.engine import engine, engine_env, ensure_image, image_tag, labels, mode, sh
 from teamlib.run import (bundle_commit, check_task, limit_seconds, mask_stream, masked_lines, remove_tree,
-                         split_repo)
+                         split_repo, stage_of)
 
 
 # ---------------------------------------------------------------- gate
 
 BOX: list = []  # mode = bwrap plugs in without importing the leaf module
+EVIDENCE: list = []  # teamlib.evidence plugs in the same way: what a receipt needs, parsed there
+SERIES: list = []  # teamlib.gate_series the same way: the completeness gate of a change in packages
 
 GATE_LINES = 80
 GATE_USAGE = "usage: team gate TASK --repo REF|PATH@REF --base REF [--brief FILE] [--fresh-cache] [--warm-cache] | team gate --fresh-cache"
+GATE_HELP = GATE_USAGE + """
+
+The pre-gate of a branch, without a model and without keys: the changed files against the brief's Paths, then
+[flow] gate on the head in a sandbox. Exit 0 green, 1 red; gate.json keeps the evidence.
+The brief (--brief FILE) may also have:
+  Series: NAME K/N      package K of N of one change (NAME a task id, 1 <= K <= N <= 20). On a base on main
+                        ([gate] main, default main; a base commit on that branch counts) K < N is red: land the series
+                        on a feature branch, then one complete change. N/N is red there without the migration
+                        .agents/upgrade/<VERSION>.md and an upgrade test tests/test_upgrade_*.py in the diff, which
+                        the gate runs itself on the head. A malformed or second Series line is red.
+  Migration: none REASON  for N/N with VERSION unchanged: no migration file is needed; the reason is required."""
+
+
+def evidence(name: str, *args) -> dict:
+    """teamlib.evidence's name(*args), which bin/team loads with every module. Without it a gate.json or a flow
+    step would lack what a receipt needs, unnoticed: stop instead."""
+    if not EVIDENCE:
+        die(f"evidence {name}: teamlib.evidence is not loaded (gate.EVIDENCE is empty); run through .agents/bin/team",
+            1)
+    return getattr(EVIDENCE[0], name)(*args)
+
+
+def series(name: str, *args):
+    """teamlib.gate_series's name(*args), which bin/team loads with every module. Without it a brief's Series line
+    would go unchecked: stop instead."""
+    if not SERIES:
+        die(f"series {name}: teamlib.gate_series is not loaded (gate.SERIES is empty); run through .agents/bin/team",
+            1)
+    return getattr(SERIES[0], name)(*args)
 
 
 def fresh_cache(ini) -> None:
@@ -34,7 +65,11 @@ def fresh_cache(ini) -> None:
 def cmd_gate(ini, args: list[str]) -> int:
     """The pre-gate of a worker's branch, without a model and without keys: changed files against the brief's
     Paths, then the team's [flow] gate command on the branch head, in a sandbox (container mode) or a scratch
-    clone (host mode). Exit 0 green, 1 red. --fresh-cache empties the trusted lower cache first."""
+    clone (host mode). Exit 0 green, 1 red. --fresh-cache empties the trusted lower cache first. A brief's Series
+    line adds the completeness gate of teamlib.gate_series."""
+    if args in (["-h"], ["--help"]):
+        say(GATE_HELP)
+        return 0
     opts, positional, fresh = {"--repo": None, "--base": None, "--brief": None}, [], False
     warm = False
     it = iter(args)
@@ -65,19 +100,25 @@ def cmd_gate(ini, args: list[str]) -> int:
     paths = brief_header(Path(opts["--brief"]).read_text(encoding="utf-8"))["paths"] if opts["--brief"] else []
     changed = git("diff", "--name-only", "--no-renames", start, head, at=repo_dir).stdout.split("\n")
     outside = outside_paths([c for c in changed if c], paths)
+    # Unquoted, for evidence: bytes, as git allows names that are no UTF-8 (surrogateescape keeps every control byte).
+    names = subprocess.run(["git", "-C", str(repo_dir or PROJECT), "diff", "-z", "--name-only", "--no-renames", start,
+                            head], capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")
     if fresh:
         fresh_cache(ini)
     # A new folder on every run: whatever an earlier run left there (links, read-only folders) goes, unfollowed.
     gates = env_dir() / "gate"
     if gates.is_symlink():
         gates.unlink()
-    stage = gates / task
+    stage = stage_of("gate", task)
     remove_tree(stage)
     stage.mkdir(parents=True)
     result = {"task": task, "head": head, "base": start, "outside": outside, "code": None, "started": now()}
     command = get(ini, "flow", "gate")
+    planned = series("plan", ini, opts["--brief"], repo_dir, start, head)  # a brief without Series: no change
     if outside:
         result.update(state="red", why=f"outside Paths: {', '.join(outside[:10])}")
+    elif planned["why"]:
+        result.update(state="red", why=planned["why"])
     elif not command:
         result.update(state="green", why="paths checked; no gate command in [flow] gate")
     else:
@@ -85,6 +126,8 @@ def cmd_gate(ini, args: list[str]) -> int:
         code = gate_execute(ini, stage, bundled, head, command, start, warm=warm)
         result.update(state="green" if code == 0 else "red", code=code,
                       why="gate command passed" if code == 0 else f"gate command exit {code}")
+    result.update(evidence("gate_record", ini, command, stage / "gate.log", names))  # network, command_sha256, complexity
+    result.update(series("finish", ini, planned, result, stage, repo_dir, task))  # series, migration, upgrade_test
     result["ended"] = now()
     write_json(stage / "gate.json", result)
     lead_log(task, "done" if result["state"] == "green" else "failed", f"gate {result['state']}: {result['why']}")

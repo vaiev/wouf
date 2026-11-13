@@ -20,17 +20,14 @@ def mode(ini) -> str:
         die("the bot environment is not set up yet (mode = undeclared): follow .agents/skills/setup.md")
     return value
 
-
 def engine(ini) -> str:
     return get(ini, "environment", "engine", "docker") or "docker"
-
 
 def where(ini) -> dict:
     """The container engine and where it runs; a run keeps a copy so it never re-reads the settings.
     Every container command starts here, so image and user are checked first."""
     image(ini), user(ini)
     return {"engine": engine(ini), "docker_host": get(ini, "environment", "docker_host")}
-
 
 def engine_env(at) -> dict:
     at = at if isinstance(at, dict) else where(at)
@@ -43,7 +40,6 @@ def engine_env(at) -> dict:
 # fetch_masked in the kernel reaches the engine through these: the kernel imports no command module.
 core.where, core.engine_env = where, engine_env
 BOX: list = []  # mode = bwrap: teamlib.bwrap, as in teamlib.run.BOX: team bot create, stop, inspect and login
-
 
 def sh(at, args: list[str], check: bool = True, input_text: str | None = None):
     """Run the container engine; `at` is the settings or a run's copy of where()."""
@@ -62,7 +58,6 @@ SSH_HOST = re.compile(r"ssh://(?:([A-Za-z0-9_][A-Za-z0-9._-]{0,31})@)?([A-Za-z0-
 SSH_COMMAND = 120_000
 # A dead connection ends in 45 s, an unreachable host fails in 20 s (TCP keepalive alone took 2 h, 2026-11-02).
 SSH_ALIVE = ["-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=20"]
-
 
 def shell(at: dict, script: str, args: list[str]) -> list[str]:
     """The command that runs a fixed sh script with args as its positional parameters where the engine is: over one
@@ -85,7 +80,6 @@ def shell(at: dict, script: str, args: list[str]) -> list[str]:
 # missing it clears the stamp and makes them again. team image, bot reset and bot remove clear it too.
 STAMP = "engine-stamp.json"
 
-
 def stamp_of(at: dict) -> dict:
     data = read_json(env_dir() / STAMP)
     if data.get("at") != f"{at['engine']} {at['docker_host']}":
@@ -93,7 +87,6 @@ def stamp_of(at: dict) -> dict:
     images, volumes = data.get("images"), data.get("volumes")
     return {"images": images if isinstance(images, dict) else {},
             "volumes": volumes if isinstance(volumes, list) else []}
-
 
 def stamp_note(at: dict, image: str | None = None, digest: str | None = None, storage: str | None = None,
                drop: bool = False) -> None:
@@ -108,10 +101,8 @@ def stamp_note(at: dict, image: str | None = None, digest: str | None = None, st
     env_dir().mkdir(parents=True, exist_ok=True)
     write_json(env_dir() / STAMP, {"at": f"{at['engine']} {at['docker_host']}", **data})
 
-
 def stamp_clear() -> None:
     (env_dir() / STAMP).unlink(missing_ok=True)
-
 
 def plain(ini, key: str, default: str, pattern: re.Pattern, shape: str) -> str:
     """[environment] key (or what [DEFAULT] passes on), only when it is a plain value: it becomes part of the
@@ -121,22 +112,17 @@ def plain(ini, key: str, default: str, pattern: re.Pattern, shape: str) -> str:
         die(f"team/config.ini [environment] {key} must be a plain {shape}, not '{visible(value)}'; fix it there")
     return value
 
-
 def image(ini) -> str:
     return plain(ini, "image", "node:lts", IMAGE, "image reference (registry/name[:tag][@sha256:digest])")
-
 
 def user(ini) -> str:
     return plain(ini, "user", "node", USER, "user name or uid[:gid]")
 
-
 def image_tag(ini) -> str:
     return f"{base(ini)}-image"
 
-
 def volume(ini, member: str) -> str:
     return f"{base(ini)}-{member}"
-
 
 def labels(ini, member: str | None = None, task: str | None = None) -> list[str]:
     out = ["--label", f"wouf.team={base(ini)}"]
@@ -150,7 +136,6 @@ def labels(ini, member: str | None = None, task: str | None = None) -> list[str]
 
 def runner_names(ini) -> list[str]:
     return [s.split(".", 1)[1] for s in ini.sections() if s.startswith("runner.")]
-
 
 def runner_tools(command: str) -> list[str]:
     """Wrappers then CLI; sh -c uses the catalog's SCRIPT CLI ARGS convention,
@@ -169,12 +154,10 @@ def runner_tools(command: str) -> list[str]:
         return list(dict.fromkeys(tools))
     return []  # A wrapper without a program is not a configured runner.
 
-
 def cli_of(ini, name: str) -> str | None:
     """The host CLI, falling back to the container command, with wrappers removed."""
     command = get(ini, f"runner.{name}", "host_command") or get(ini, f"runner.{name}", "command")
     return (runner_tools(command) or [None])[-1]
-
 
 def image_tools(ini, runners) -> list[str]:
     """The container command's wrappers and real CLI, then git and python3."""
@@ -187,10 +170,9 @@ def image_tools(ini, runners) -> list[str]:
 # The tiers a run, a bot or a class names; mid is optional per runner.
 TIERS = ("light", "mid", "strong")
 
-
 def tier_model(ini, runner: str, tier: str, model: str | None = None) -> tuple[str, str]:
     """The model a tier names on a runner and the tier actually used, as the receipt names it: a runner without a
-    mid model runs mid on strong (mid→strong), so a missing setting never lowers quality. An empty model is the
+    mid model runs mid on strong (mid->strong), so a missing setting never lowers quality. An empty model is the
     CLI's own default; a model given for the run wins and the tier stays as named."""
     if tier not in TIERS:
         die(f"tier must be light, mid or strong, not {tier!r}")
@@ -201,18 +183,15 @@ def tier_model(ini, runner: str, tier: str, model: str | None = None) -> tuple[s
         return get(ini, section, "strong"), tier_label(tier, "strong")
     return get(ini, section, tier), tier
 
-
 def tier_label(asked: str, used: str) -> str:
-    """The tier as a receipt names it: mid→strong when mid fell back."""
-    return asked if asked == used else f"{asked}→{used}"
-
+    """The tier as a receipt names it: mid->strong (ASCII) when mid fell back."""
+    return asked if asked == used else f"{asked}->{used}"
 
 def tier_models(ini, runner: str) -> str:
     """The model per tier of a runner, as team runners shows it: mid=strong when mid falls back."""
     shown = {tier: get(ini, f"runner.{runner}", tier) or "default" for tier in ("strong", "light")}
     shown["mid"] = get(ini, f"runner.{runner}", "mid") or "strong"
     return " ".join(f"{tier}={shown[tier]}" for tier in ("strong", "mid", "light"))
-
 
 def pick_runner(ini, *wishes: str | None) -> str:
     for wish in (*wishes, os.environ.get("WOUF_RUNNER"), get(ini, "team", "runner", "auto")):
@@ -229,7 +208,6 @@ def pick_runner(ini, *wishes: str | None) -> str:
             return candidate
     die("no runner found: name one in [team] runner in team/config.ini (claude, codex, agy, local)")
     return ""
-
 
 def connector(name: str) -> dict:
     # A bare catalog name only: a path such as ../team/import/<archive>/connectors/x would reach files nobody activated.
@@ -248,7 +226,6 @@ def connector(name: str) -> dict:
     die(f"unknown connector {name!r}: add .agents/connectors/{name}.md or team/connectors/{name}.md")
     return {}
 
-
 def mcp_entry(server: dict, fmt: str) -> dict:
     """Translate the neutral server block into the MCP config shape a CLI reads."""
     if server.get("transport") == "http":
@@ -266,7 +243,6 @@ def mcp_entry(server: dict, fmt: str) -> dict:
 NEEDS_RUNNER = ("the team image needs to know the agent CLI: set [team] runner in .agents/team/config.ini "
                 "(claude, codex, agy, local)")
 
-
 def image_runners(ini) -> tuple[set, list]:
     """The agent CLIs the team image holds, from the settings only (never the session, PATH or WOUF_RUNNER):
     each active bot's runner, where auto means [team] runner. A broken declaration only gives a warning."""
@@ -280,7 +256,6 @@ def image_runners(ini) -> tuple[set, list]:
             continue
         found.add(name)
     return found, warnings
-
 
 def recipe(ini) -> str:
     base_image, who = image(ini), user(ini)
@@ -316,10 +291,8 @@ def recipe(ini) -> str:
               "WORKDIR /bot"]
     return "\n".join(lines) + "\n"
 
-
 def ensure_image(ini, force: bool = False) -> str:
     return build_image(where(ini), image_tag(ini), recipe(ini), labels(ini), force)
-
 
 def build_image(at: dict, tag: str, text: str, label_args: list[str], force: bool = False) -> str:
     digest = hashlib.sha256(text.encode()).hexdigest()[:16]
@@ -330,10 +303,8 @@ def build_image(at: dict, tag: str, text: str, label_args: list[str], force: boo
     stamp_note(at, image=tag, digest=digest)
     return tag
 
-
 def ensure_volume(ini, member: str) -> str:
     return ensure_storage(where(ini), volume(ini, member), labels(ini, member))
-
 
 def ensure_storage(at: dict, name: str, label_args: list[str]) -> str:
     if sh(at, ["volume", "inspect", name], check=False).returncode:
@@ -350,9 +321,8 @@ def ensure_storage(at: dict, name: str, label_args: list[str]) -> str:
 # what cp leaves of them is read away, so the next line is the host's).
 # The shell then says wouf-ready on stderr and waits for one line: go starts the bot, anything else (a stop came,
 # or stdin was cut) removes the container and exits 130, so a stop before this point never lets the bot start. The
-# keys go to the container on its stdin and stay in a variable of this shell: printf is a builtin, so they are in
-# no argument, no environment and no file. A step that fails says which one on stderr and exits 125 before the bot
-# starts.
+# keys go to the container on its stdin and stay in a variable of this shell: printf is a builtin, so they are in no
+# argument, no environment and no file. A step that fails says which one on stderr and exits 125 before the bot starts.
 START = """E=$1 C=$2 I=$3 V=$4
 shift 4
 fail() { printf 'wouf-setup %s\\n' "$1" >&2; exit 125; }
@@ -388,7 +358,6 @@ timeout "$3" "$E" wait "$C" </dev/null || { s=$?; [ $s = 124 ] && "$E" kill "$C"
 "$E" logs "$C" </dev/null 2>&1
 """
 
-
 def box_ready(spec: dict, fresh: bool) -> None:
     """The image and the bot's storage, made only when the stamp does not know them (or fresh: it was wrong)."""
     at = spec["where"]
@@ -409,14 +378,12 @@ def box_ready(spec: dict, fresh: bool) -> None:
             stamp_clear()
             box_ready(spec, True)
 
-
 def box_command(spec: dict) -> list[str]:
     proxy = [a for v in EGRESS_ENV for a in ("-e", f"{v}={EGRESS_ENV[v]}")] if spec.get("egress") else []
     create = ["-i", "--name", spec["container"], *spec["run_labels"], *HARDEN, *proxy, "--network", spec["network"],
               "--cpus", spec["cpus"], "--memory", spec["memory"], "-v", f"{spec['storage']}:/bot", spec["image"],
               "sh", "-c", spec["script"], "sh", *spec["argv"]]
     return shell(at := spec["where"], START, [at["engine"], spec["container"], spec["image"], spec["storage"], *create])
-
 
 def inbound(stage: Path, pack: Path, bundle: bool) -> list[tuple[Path, str]]:
     """Every folder and regular file a container gets, by its name in the archive: in/ as /inbox, the pack as /wouf,
@@ -430,7 +397,6 @@ def inbound(stage: Path, pack: Path, bundle: bool) -> list[tuple[Path, str]]:
             found.append((here, "/".join((name, *rel))))
             found += [(here / f, "/".join((name, *rel, f))) for f in sorted(files)]
     return [(path, "repo.bundle" if bundle and name == "inbox/repo.bundle" else name) for path, name in found]
-
 
 def box_archive(spool, stage: Path, pack: Path, bundle: bool) -> int:
     """One archive of what the container gets, owned by root and readable, into spool. Returns its size."""
@@ -446,7 +412,6 @@ def box_archive(spool, stage: Path, pack: Path, bundle: bool) -> int:
                 with path.open("rb") as handle:
                     tar.addfile(info, handle)
     return spool.tell()
-
 
 def send_box(proc, stdin_text: str, stage: Path, pack: Path | None, bundle: bool = False, ready=None) -> None:
     """The keys, then (container) the size of the archive and the archive down the pipe; then, once the other side
@@ -470,7 +435,6 @@ def send_box(proc, stdin_text: str, stage: Path, pack: Path | None, bundle: bool
     except (OSError, ValueError, tarfile.TarError):
         pass
 
-
 def watch_stop(proc, spec: dict) -> None:
     """A stop that came between go and the start finds no running container to stop: it is stopped here, again,
     until the pipeline ends (stop does nothing to a container that is only created)."""
@@ -479,7 +443,6 @@ def watch_stop(proc, spec: dict) -> None:
         if stopped.exists():
             sh(spec["where"], ["stop", "-t", "20", spec["container"]], check=False)
         time.sleep(0.5)
-
 
 def rejoin(spec: dict, code: int, keep) -> int:
     """After ssh ended the stream (255) of a ready container, its exit code once it ends and its whole log into
@@ -501,6 +464,24 @@ def rejoin(spec: dict, code: int, keep) -> int:
     die(f"the connection to the engine host was lost and did not come back within {int(end - began)} s of the start; "
         f"{spec['container']} may still run on {at['docker_host']}, its results were not collected")
 
+def refuse_out_input(item: str, out: Path, task: str) -> None:
+    """team run's --input inside the task's own out/, which the run empties first (stage_run, fetch_results): refused
+    before anything is deleted."""
+    if Path(item).resolve().is_relative_to(out.resolve()):
+        die(f"input {item} lies in {task}'s out/, which this run empties: copy it elsewhere first")
+
+def relative_repo(value: str | None, path_start: tuple) -> str | None:
+    """team run's --repo: a relative PATH[@REF] (not starting like a path, path_start) as ./PATH[@REF], read from the
+    caller's folder. A path is a working tree there, or, when it is no commit of this folder (origin/main stays a ref),
+    a name with a slash or an @REF, or a folder there (a bare repository); HEAD and reflog forms (@{) stay refs."""
+    path = value.rpartition("@")[0] if value and "@" in value else value
+    if not path or value.startswith(path_start) or value in (".", "..", "HEAD") or "@{" in value:
+        return value
+    ref = not git("rev-parse", "-q", "--verify", f"{value}^{{commit}}", check=False).returncode
+    if (Path(path) / ".git").exists() or (not ref and ("/" in path or "@" in value or Path(path).is_dir())):
+        return "./" + value
+    return value if ref else die(f"--repo {value}: no such commit in this repository (is this folder a git "
+                                 f"repository?); no folder {Path(path).resolve()} either")
 
 def fetch_results(spec: dict, out: Path, binary: list, skipped: list) -> tuple[bool, str | None]:
     """/outbox of the container, read as one archive while the same call removes the container, masked in memory
@@ -538,7 +519,6 @@ def fetch_results(spec: dict, out: Path, binary: list, skipped: list) -> tuple[b
     receipts = held.get(("logs", f"{spec['member']}.jsonl"))
     return ok, receipts.decode("utf-8", "replace") if ok and isinstance(receipts, bytes) else None
 
-
 def others_step(task: str) -> str:
     """The sandbox step that bundles every other branch (base too, which the bot can move), and a detached HEAD
     (as refs/wouf/detached), that has commits on neither the run's start (refs/wouf/start, pinned at the checkout)
@@ -550,7 +530,6 @@ def others_step(task: str) -> str:
             f"-e refs/heads/task/{task}); do [ -n \"$(git rev-list -1 \"$r\" --not refs/wouf/start $t)\" ] "
             "&& keep=\"$keep $r\"; done; [ -z \"$keep\" ] || git bundle create \"$T/out/other.bundle\" $keep --not "
             "refs/wouf/start) >/dev/null 2>&1 || true")
-
 
 def keep_others(spec: dict) -> dict:
     """The bot's commits outside its task branch, brought back as <result branch>--<name, made safe> (never
@@ -576,14 +555,12 @@ def keep_others(spec: dict) -> dict:
               if names and not (out / "result.bundle").is_file() else None)
     return {"kept": kept, "reason": reason, "error": error}
 
-
 def others_signal(member: str, branch: str | None, others: dict) -> str:
     """The lead's receipt of a run that returned: its branch, the kept other branches, or why it needs attention."""
     if others["reason"]:
         return f"{member} needs attention: {others['reason']}"
     return (f"{member} returned" + (f", branch {branch}" if branch else "")
             + (f", also kept {', '.join(others['kept'])}" if others["kept"] else ""))
-
 
 def others_lines(name: str, result: dict) -> list[str]:
     """What team run and team result say about commits kept outside the task branch."""
@@ -593,15 +570,12 @@ def others_lines(name: str, result: dict) -> list[str]:
         lines.append(f"team: needs attention: {result.get('reason')}")
     return lines
 
-
 class Collision(ValueError):
     pass
-
 
 def tar_path(name: str) -> tuple:
     """An archive name below its first component (the folder that was copied), as parts."""
     return tuple(p for p in PurePosixPath(name).parts[1:] if p not in ("", ".", "/"))
-
 
 def claimed(seen: dict, member) -> tuple | None:
     """(original parts, masked parts below the top folder) of an archive member, or None for one to leave out;
@@ -614,7 +588,6 @@ def claimed(seen: dict, member) -> tuple | None:
         raise Collision(COLLISION)
     return original, parts[1:]
 
-
 def end_fetch(proc, spec: dict) -> None:
     """Not killed: the same shell removes the container once the archive is read or abandoned; only a shell that
     hangs is ended, and the container removed by a call of its own."""
@@ -625,7 +598,6 @@ def end_fetch(proc, spec: dict) -> None:
         proc.kill()
         proc.wait()
         sh(spec["where"], ["rm", "-f", spec["container"]], check=False)
-
 
 def keep_result(tar, member, original: tuple, rest: tuple, out: Path, held: dict, binary: list, skipped: list) -> None:
     """One member of /outbox. Under out/: a folder or a regular file is written (masked), a hard link gets the
@@ -649,7 +621,6 @@ def keep_result(tar, member, original: tuple, rest: tuple, out: Path, held: dict
     elif under == "logs":
         held[original] = mask_bytes(data)
 
-
 def member_bytes(tar, member, held: dict) -> bytes:
     """The contents of a file member; of a hard link, the masked contents of the file of the copy it links to."""
     if not member.islnk():
@@ -660,7 +631,6 @@ def member_bytes(tar, member, held: dict) -> bytes:
         raise ValueError(f"a hard link to {member.linkname}, which is not a file of the copy")
     return held[linked].read_bytes() if isinstance(held[linked], Path) else held[linked]
 
-
 def running(ini, member: str | None = None) -> list[tuple[str, str, str]]:
     filters = ["--filter", f"label=wouf.team={base(ini)}"]
     if member:
@@ -669,11 +639,15 @@ def running(ini, member: str | None = None) -> list[tuple[str, str, str]]:
                 check=False)
     return [tuple(line.split("|")) for line in result.stdout.split() if line.count("|") == 2]
 
-
 def uses_login(ini, runner: str) -> bool:
     """auth = login: the agent CLI is signed in to a subscription inside the bot's storage; no key is passed."""
     return words(get(ini, f"runner.{runner}", "auth")) == ["login"]
 
+def login_paths(ini, runner: str) -> list[str]:  # [runner.X] login_paths, checked: teamlib.taskstore (line budget)
+    return importlib.import_module("teamlib.taskstore").login_paths(ini, runner)
+
+def login_link_steps(paths: list[str]) -> tuple[list[str], list[str]]:  # the run script's steps: teamlib.taskstore
+    return importlib.import_module("teamlib.taskstore").login_link_steps(paths)
 
 def login_check(ini, member: str, runner: str, read_only: bool = False) -> bool | None:
     """Check the stored login (optionally read-only); None when the runner names no login_check."""
@@ -684,7 +658,6 @@ def login_check(ini, member: str, runner: str, read_only: bool = False) -> bool 
         return BOX[0].login_check(member, test)
     return sh(ini, ["run", "--rm", *HARDEN, "--network", "none", "-e", "HOME=/bot/home", "-v",
                     f"{volume(ini, member)}:/bot{':ro' if read_only else ''}", image_tag(ini), "sh", "-c", test], check=False).returncode == 0
-
 
 def throwaway(ini, member: str, *command: str) -> subprocess.CompletedProcess:
     """A short-lived container on the bot's storage, for listing and archiving."""
@@ -716,7 +689,6 @@ def archive(ini, member: str) -> Path:
                 shutil.rmtree(target, ignore_errors=True)
                 raise
     return target
-
 
 def bot_command(ini, action: str, member: str, rest: list[str]) -> None:
     check_member(member)
@@ -820,7 +792,6 @@ def bot_command(ini, action: str, member: str, rest: list[str]) -> None:
     else:
         die(f"unknown bot action {action!r} (see: team help)")
 
-
 def cmd_install(ini, rest: list[str]) -> None:
     if len(rest) < 2 or rest[0] != "--":
         die("usage: team install -- COMMAND")
@@ -849,7 +820,6 @@ def event_problem(state, log, kind: str, actor: str, task: str, data: dict) -> s
         return "a field is invalid or too long"
     return None
 
-
 def lesson_outputs(folder: Path, skip, masks, bot_text) -> list:
     """Read at most twenty regular Markdown files, each at most 64 KiB, without following links."""
     proposals = []
@@ -877,9 +847,7 @@ def lesson_outputs(folder: Path, skip, masks, bot_text) -> list:
         heading = re.search(r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", body, re.M)
         title = bot_text(heading.group(1) if heading else path.name, masks)
         proposals.append((path.name, title, body))
-
     return proposals
-
 
 def collect_lessons(spec: dict, store: list, record, bot_text, masks=(), skipped=()) -> None:
     """Propose bounded Markdown outputs through the shared store; a run's nonce and path identify a proposal.
@@ -926,60 +894,11 @@ def collect_lessons(spec: dict, store: list, record, bot_text, masks=(), skipped
         return events
     record([], prepare)
 
-# ---------------------------------------------------------------- a run's numbers and the budget
-
-# The usage adapter of teamlib.run for Claude Code: it runs inside the sandbox as its own program (its source is the
-# run script's step), so it imports what it needs itself.
-def claude_project(work: str) -> str:
-    """The folder Claude Code keeps a working folder's sessions in, below ~/.claude/projects."""
-    return re.sub(r"[^A-Za-z0-9]", "-", work)
-
-
-def claude_usage(home, since, project):
-    """Run inside the sandbox, as its own program: the token numbers of the Claude Code sessions of this task's
-    folder written since the run began, as 'tokens=in/cache_read/cache_write/out skipped=N'. One message in several
-    records counts once; a line that is not JSON or holds no plain numbers is skipped and counted. Only digits are
-    returned: no text, name or path of a transcript. Only regular files are opened (a FIFO would block forever)."""
-    import json, os, stat  # noqa: E401
-    keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens")
-    try:
-        start = os.stat(since).st_mtime
-    except OSError:
-        return "tokens=unknown skipped=0"
-    turns, skipped, found = {}, 0, False
-    for root, _, files in os.walk(os.path.join(home, ".claude", "projects", project)):
-        for name in sorted(files):
-            path = os.path.join(root, name)
-            try:
-                if not name.endswith(".jsonl") or not stat.S_ISREG((info := os.lstat(path)).st_mode) or info.st_mtime < start:
-                    continue
-                handle = open(path, encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            found = True
-            with handle:
-                for number, line in enumerate(handle):
-                    try:
-                        row = json.loads(line)
-                        if row.get("type") != "assistant":
-                            continue
-                        message = row["message"]
-                        values = [message["usage"].get(key, 0) for key in keys]
-                    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
-                        skipped += 1
-                        continue
-                    ident = message.get("id")
-                    if all(type(v) is int and 0 <= v < 10 ** 12 for v in values):
-                        turns[(path, ident if isinstance(ident, str) else number)] = values
-                    else:
-                        skipped += 1
-    totals = "/".join(str(min(sum(turn[i] for turn in turns.values()), 10 ** 12 - 1)) for i in range(4))
-    return f"tokens={totals if found else 'unknown'} skipped={skipped}"
+# ---------------------------------------------------------------- the budget
 
 # [budget] in config.ini: token caps, off by default. A run's tokens are the numbers its receipt records (teamlib.run
 # writes them into the lead's receipt at the end of every collected run), summed; the day is the UTC day.
 RECEIPT_TOKENS = re.compile(r"tokens=([0-9]{1,12})/([0-9]{1,12})/([0-9]{1,12})/([0-9]{1,12})")
-
 
 def budget_caps(ini) -> dict:
     """The caps of [budget] in tokens, by key; a key left empty is no cap. Every value is checked, another bot's
@@ -993,17 +912,15 @@ def budget_caps(ini) -> dict:
             caps[key] = int(value)
     return caps
 
-
 def next_midnight() -> str:
     """When today's budget ends: the next UTC midnight, as now() writes a time."""
     day = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     return (day + timedelta(days=1)).isoformat(timespec="seconds")
 
-
 def tokens_today(member: str | None = None) -> int:
     """The tokens of today's runs in the lead's receipts, of one bot (the signal's first word) or of all. A receipt
     without numbers (unknown, or no run) counts nothing; a line that is not a receipt is passed over."""
-    path = team_dir() / "logs" / "lead.jsonl"
+    path = log_dir() / "lead.jsonl"
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
     except OSError:
@@ -1020,7 +937,6 @@ def tokens_today(member: str | None = None) -> int:
         if found and when.tzinfo and when.astimezone(timezone.utc).date() == day and member in (None, bot):
             used += sum(int(n) for n in found.groups())
     return used
-
 
 def budget_skip(caps: dict, member: str, task: str, stage: Path, name: str) -> tuple | None:
     """Before a run starts: once today's tokens reach the bot's own per_day or the team's, the run is not started.
@@ -1039,13 +955,11 @@ def budget_skip(caps: dict, member: str, task: str, stage: Path, name: str) -> t
             return spec, result
     return None
 
-
 def over_run(spec: dict, tokens: str) -> str | None:
     """'<used>/<cap>' when a run's own numbers pass its per_run cap (read when it started), else None."""
     found, cap = RECEIPT_TOKENS.fullmatch(f"tokens={tokens}"), spec.get("per_run")
     used = sum(int(n) for n in found.groups()) if found else 0
     return f"{used}/{cap}" if isinstance(cap, int) and used > cap else None
-
 
 def budget_mark(signal: str, over: str | None) -> str:
     """A receipt's signal marked over-budget, after the bot's id (its first word, which team stats reads)."""
@@ -1070,7 +984,6 @@ AARDVARK_MIN = (1, 11, 0)
 MOBY_FIXED = (((23, 0, 11), (24, 0, 0)), ((25, 0, 5), (26, 0, 0)), ((26, 0, 0), (10 ** 6, 0, 0)))
 VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-rc\.?(\d+)|(-[0-9A-Za-z.-]+))?")
 
-
 def egress_hosts(value: str, where_from: str) -> list[str]:
     """The host names of a list (comma or space separated), lower case and without a trailing dot; an entry that is
     not a host name or .suffix (an address, a port, a pattern, a URL) stops here, so a typo never widens a list."""
@@ -1084,7 +997,6 @@ def egress_hosts(value: str, where_from: str) -> list[str]:
             hosts.append(host)
     return hosts
 
-
 def egress_base(ini) -> list[str]:
     return egress_hosts(get(ini, "egress", "allow"), "[egress] allow in team/config.ini")
 
@@ -1092,17 +1004,14 @@ def egress_base(ini) -> list[str]:
 EGRESS_NEEDS = {"claude": "api.anthropic.com claude.ai platform.claude.com",
                 "codex": "api.openai.com chatgpt.com auth.openai.com"}
 
-
 def egress_needs(ini, runner: str) -> list[str]:
     """The hosts a runner needs for its model API and login: [egress] needs.<runner>, else EGRESS_NEEDS by its CLI."""
     value = get(ini, "egress", f"needs.{runner}") or EGRESS_NEEDS.get(Path(cli_of(ini, runner) or "").name, "")
     return egress_hosts(value, f"[egress] needs.{runner} in team/config.ini")
 
-
 def egress_allows(allow: list[str], host: str) -> bool:
     """Whether the list lets host through, as the proxy matches: exactly, or below a .suffix entry."""
     return any(host.endswith(e) if e.startswith(".") else host == e for e in allow)
-
 
 def version_of(text: str) -> tuple | None:
     """(major, minor, patch, pre) of text's first version; pre: None for a release, an rc's number, else -1."""
@@ -1112,14 +1021,12 @@ def version_of(text: str) -> tuple | None:
     pre = int(found.group(4)) if found.group(4) else (-1 if found.group(5) else None)
     return int(found.group(1)), int(found.group(2)), int(found.group(3)), pre
 
-
 def moby_fixed(found: tuple) -> bool:
     """Moby 23.0.11+, 25.0.5+ or 26.0.0-rc3+ (GHSA-mq39-4gv4-mvpx); 24.x never got the fix."""
     release, pre = found[:3], found[3]
     if release == (26, 0, 0) and pre is not None:
         return pre >= 3
     return pre is None and any(low <= release < high for low, high in MOBY_FIXED)
-
 
 def egress_engine_check(at: dict) -> None:
     """Refuse an engine whose internal networks let DNS out: Podman needs netavark with aardvark-dns 1.11.0 or
@@ -1144,7 +1051,6 @@ def egress_engine_check(at: dict) -> None:
             f"CVE-2024-29018: older ones forward DNS out of an internal network); {name} says: {shown}. Update "
             f"Docker, or set network = bridge")
 
-
 def egress_prepare(ini, o: dict, decl: dict, current: str, runner: str) -> dict | None:
     """network = egress: the run's allowlist (teamlib.flow), then the engine's versions; None for bridge and none."""
     if get(ini, "environment", "network", "bridge") != "egress":
@@ -1157,14 +1063,12 @@ def egress_prepare(ini, o: dict, decl: dict, current: str, runner: str) -> dict 
     egress_engine_check(where(ini))
     return egress
 
-
 def egress_spec(egress: dict | None, container: str, team: str) -> dict:
     """What a run's spec gets for egress: the bot's network (the internal one) and the names; nothing without."""
     if not egress:
         return {}
     names = {"in": f"wouf-{container}-in", "out": f"wouf-{container}-out", "proxy": f"{container}-proxy"}
     return {"network": names["in"], "egress": {**names, **egress, "team": team}}
-
 
 def egress_up(spec: dict) -> None:
     """The run's two networks and its proxy, started and listening, before the bot is created. Leftovers of an
@@ -1179,6 +1083,7 @@ def egress_up(spec: dict) -> None:
     sh(at, ["network", "create", "--internal", *tag, egress["in"]])
     sh(at, ["network", "create", *tag, egress["out"]])
     allow = [arg for host in egress["allow"] for arg in ("--allow", host)]
+    allow += [arg for pair in egress.get("private", []) for arg in ("--private", pair)]  # [egress] private, if any
     sh(at, ["create", "--name", egress["proxy"], *tag, *HARDEN, "--read-only", "--network", egress["in"],
             "--network-alias", "proxy", "--cpus", "0.5", "--memory", "256m", spec["image"],
             "python3", "-I", "-c", program, "--bind", "*", "--port", str(EGRESS_PORT), *allow])
@@ -1193,12 +1098,11 @@ def egress_up(spec: dict) -> None:
             die(f"the egress proxy did not start: {visible((logs.stderr + logs.stdout).strip())[-300:]}")
         time.sleep(0.2)
 
-
 def egress_end(spec: dict, box: bool = False, log: bool = True) -> None:
     """The proxy's log into the run folder (egress.log, masked on the way), then the proxy and the networks removed;
     box: the bot's container first, when nothing collects it any more. No-op without egress; never fails a run."""
     egress = spec.get("egress")
-    if not egress:
+    if not egress or spec.get("mode") == "bwrap":  # bwrap: only a record in run.json; teamlib.bwrap ends its proxy
         return
     at = spec["where"]
     logs = sh(at, ["logs", egress["proxy"]], check=False) if log else None
@@ -1211,7 +1115,6 @@ def egress_end(spec: dict, box: bool = False, log: bool = True) -> None:
         if sh(at, ["network", "inspect", name], check=False).returncode == 0:
             sh(at, ["network", "rm", name], check=False)
 
-
 def egress_report(stage: Path, task: str, nonce: str, last: int = 40) -> None:
     """The proxy's log of the run, masked and framed as data: a count, then its last lines."""
     path = stage / "egress.log"
@@ -1222,7 +1125,6 @@ def egress_report(stage: Path, task: str, nonce: str, last: int = 40) -> None:
     say(f"--- egress log of {task}: {len(rows)} lines, {refused} refused; data from the proxy [{nonce}] ---")
     say("\n".join(rows[-last:] + ([f"(earlier lines in {path})"] if len(rows) > last else [])))
     say(f"--- end of egress log [{nonce}] ---")
-
 
 def egress_clean(at: dict, team: str) -> list[str]:
     """What killed supervisors left (labels wouf.team and wouf.egress): each dead run's proxy and networks go, a
@@ -1248,7 +1150,6 @@ def egress_clean(at: dict, team: str) -> list[str]:
         gone.append(name)
     return gone
 
-
 def alive_run(member: str, task: str) -> bool:
     """Whether the supervisor of a run of member on task is still there (its result says running, its pid lives)."""
     result = read_json(env_dir() / member / "tasks" / task / "result.json")
@@ -1260,7 +1161,6 @@ def unknown(argv: list[str]) -> None:
     """What main says to a command it does not know, and to one with arguments it does not take."""
     die(f"unknown command: {' '.join(argv)} (see: team help)")
 
-
 def do_bot(rest: list[str]) -> int:
     ini = config()
     if len(rest) < 2:
@@ -1268,11 +1168,9 @@ def do_bot(rest: list[str]) -> int:
     bot_command(ini, rest[0], rest[1], rest[2:])
     return 0
 
-
 def do_install(rest: list[str]) -> int:
     cmd_install(config(), rest)
     return 0
-
 
 def do_image(rest: list[str]) -> int:
     ini = config()
@@ -1296,4 +1194,7 @@ USAGE = """
 
   team install -- COMMAND             add a system package or tool to the team image (all bots get it)
   team image                          build the team image now (otherwise it is built when needed)
+
+  team run ID TASK --repo PATH[@REF]  a relative PATH is read from the folder team is called in (ref/wouf@main);
+                                      an --input in the task's own out/ is refused: the run empties that folder
 """

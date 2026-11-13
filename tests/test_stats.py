@@ -15,6 +15,12 @@ from unittest.mock import patch
 
 BIN = Path(__file__).resolve().parents[1] / '.agents' / 'bin'
 sys.path.insert(0, str(BIN))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class Stats(unittest.TestCase):
@@ -30,7 +36,7 @@ class Stats(unittest.TestCase):
         # A home and team of its own: the caller's lead log, transcripts and config must not reach the report.
         (self.root / 'home').mkdir()
         env = patch.dict(os.environ, WOUF_EVENTS_DIR=str(self.events), HOME=str(self.root / 'home'),
-                         WOUF_TEAM_DIR=str(self.root / 'team'),
+                         WOUF_TEAM_DIR=str(self.root / 'team'), WOUF_LOG_DIR=str(self.root / 'team' / 'logs'),
                          XDG_CONFIG_HOME=str(self.root / 'home' / '.config'))
         env.start()
         self.addCleanup(env.stop)
@@ -51,6 +57,17 @@ class Stats(unittest.TestCase):
         path = self.transcripts / (name + '.jsonl')
         path.write_text(''.join(json.dumps(r) + '\n' for r in rows))
         return path
+
+    def test_bot_runs_follow_the_log_folder_rule(self):
+        line = {'t': datetime.now(timezone.utc).isoformat(), 'who': 'lead', 'task': 'T-1', 'outcome': 'done',
+                'signal': 'worker returned', 'cost': 'tokens=1/2/3/4'}
+        for folder in (self.root / 'other-logs', self.root / 'team' / 'logs'):
+            folder.mkdir(parents=True)
+            (folder / 'lead.jsonl').write_text(json.dumps(line) + '\n')
+            with patch.dict(os.environ, WOUF_LOG_DIR=str(folder)):
+                self.assertEqual([r[:2] for r in self.stats.bot_runs(None)], [('worker', 'T-1')])
+            (folder / 'lead.jsonl').unlink()
+        self.assertEqual(self.stats.bot_runs(None), [])  # the override's lines never come from the team folder
 
     def run_stats(self, *args):
         out, err = io.StringIO(), io.StringIO()

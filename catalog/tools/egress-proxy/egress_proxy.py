@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """An egress allowlist proxy for bot containers: HTTP CONNECT to port 443 and plain GET/HEAD to port 80, only for
-host names on an allowlist, and only to public addresses. Standard library only, Python 3.9+.
+host names on an allowlist, and only to public addresses. One narrow exception: --private HOST:PORT names a
+literal loopback or private address (or the container host alias) and one port that pass as they are, for a model
+server on the host. Standard library only, Python 3.9+.
 
-Usage: egress_proxy.py [--bind ADDR] [--port 3128] [--unix PATH] [--allow-file FILE]... [--allow HOST]... [--log FILE]
+Usage: egress_proxy.py [--bind ADDR] [--port 3128] [--unix PATH] [--allow-file FILE]... [--allow HOST]...
+                       [--private HOST:PORT]... [--log FILE]
        egress_proxy.py --relay PATH [--bind ADDR] [--port 3128]
-See README.md for the allowlist format and the log line."""
+See README.md for the allowlist format, the private pairs and the log line."""
 
 from __future__ import annotations
 
@@ -29,6 +32,13 @@ HEAD_END = re.compile(rb"\r?\n\r?\n")
 CGNAT = ipaddress.IPv4Network((0x64400000, 10))
 NAT64 = ipaddress.IPv6Network(("64:ff9b::", 96))
 NAT64_LOCAL = ipaddress.IPv6Network(("64:ff9b:1::", 48))
+# What a --private pair may name: loopback, RFC 1918 and IPv6 unique-local, built from integers on purpose; and the
+# container host aliases Docker and Podman give the host. Nothing else (no link-local, CGNAT, public or other name).
+PRIVATE_NETS = (ipaddress.IPv4Network((0x7F000000, 8)), ipaddress.IPv6Network(("::1", 128)),
+                ipaddress.IPv4Network((0x0A000000, 8)), ipaddress.IPv4Network((0xAC100000, 12)),
+                ipaddress.IPv4Network((0xC0A80000, 16)), ipaddress.IPv6Network(("fc00::", 7)))
+HOST_ALIASES = ("host.docker.internal", "host.containers.internal")
+PORT = re.compile(r"[1-9][0-9]{0,4}", re.ASCII)
 HOP_BY_HOP = {"connection", "keep-alive", "proxy-connection", "proxy-authorization", "proxy-authenticate", "te",
               "trailer", "transfer-encoding", "upgrade", "host", "content-length"}
 PHRASES = {200: "OK", 400: "Bad Request", 403: "Forbidden", 405: "Method Not Allowed", 408: "Request Timeout",
@@ -131,6 +141,59 @@ class Allowlist:
         return any(host.endswith(e) if e.startswith(".") else host == e for e in self.entries)
 
 
+def private_address(ip) -> bool:
+    """True for a loopback, RFC 1918, ::1 or unique-local address, as it is: nothing is unwrapped, so a mapped
+    (::ffff:a.b.c.d), compatible (::a.b.c.d), NAT64 or 6to4 form of a private IPv4 address is not private here."""
+    return any(ip in net for net in PRIVATE_NETS)
+
+
+def parse_private(raw: str) -> tuple:
+    """(host, port) of one --private entry: a literal loopback or private address ([v6] in brackets) or a host
+    alias, and one decimal port 1-65535. Anything else (a name, wildcard, range, network, URL) raises ValueError."""
+    host, sep, port = raw.strip().lower().rpartition(":")
+    if host.endswith(".") and host[:-1] in HOST_ALIASES:  # a trailing dot only on a name, never on a literal
+        host = host[:-1]
+    if not sep or not PORT.fullmatch(port) or int(port) > 65535:
+        raise ValueError(f"private: {raw.strip()!r} is not host:port with one port 1-65535")
+    if host.startswith("[") and host.endswith("]"):
+        inner = host[1:-1]
+        try:
+            ip = ipaddress.IPv6Address(inner)
+        except ValueError:
+            ip = None
+        if ip is None or not private_address(ip):
+            raise ValueError(f"private: {raw.strip()!r} is not a loopback or unique-local IPv6 address in brackets")
+        return f"[{ip.compressed}]", port
+    if host in HOST_ALIASES:
+        return host, port
+    try:
+        ip = ipaddress.IPv4Address(host)
+    except ValueError:
+        raise ValueError(f"private: {raw.strip()!r} is not a literal loopback or private address or one of "
+                         f"{', '.join(HOST_ALIASES)} (no name, wildcard, range or network)") from None
+    if not private_address(ip):
+        raise ValueError(f"private: {raw.strip()!r} is not a loopback or private (10/8, 172.16/12, 192.168/16) "
+                         "address")
+    return str(ip), port
+
+
+class Private:
+    """The host:port pairs that pass as they are. A request matches only with that host, written the same way
+    (an alias by name, an address as a literal), and exactly that port."""
+
+    def __init__(self, entries: Iterable[str] = ()):
+        self.pairs = tuple(dict.fromkeys(parse_private(raw) for raw in entries))
+
+    def allows(self, host: str, port: str) -> bool:
+        host = normalize(host)
+        if host.startswith("[") and host.endswith("]"):
+            try:
+                host = f"[{ipaddress.IPv6Address(host[1:-1]).compressed}]"
+            except ValueError:
+                return False
+        return (host, port) in self.pairs
+
+
 class Refuse(Exception):
     def __init__(self, status: int, reason: str):
         super().__init__(reason)
@@ -181,8 +244,10 @@ def default_connect(family: int, sockaddr: tuple, timeout: float) -> socket.sock
 class Proxy:
     def __init__(self, allowlist: Allowlist, log_path: Optional[str] = None, resolve: Callable = socket.getaddrinfo,
                  connect: Callable = default_connect, idle_timeout: float = 60.0, connect_timeout: float = 10.0,
-                 max_conns: int = 64, max_line: int = 8192, max_header: int = 32768, max_headers: int = 100):
+                 max_conns: int = 64, max_line: int = 8192, max_header: int = 32768, max_headers: int = 100,
+                 private: Optional[Private] = None):
         self.allowlist, self.resolve, self.connect = allowlist, resolve, connect
+        self.private = private or Private()
         self.idle_timeout, self.connect_timeout = idle_timeout, connect_timeout
         self.max_conns, self.max_line, self.max_header, self.max_headers = max_conns, max_line, max_header, max_headers
         self.log_file = open(log_path, "a", encoding="utf-8") if log_path else sys.stderr
@@ -252,7 +317,7 @@ class Proxy:
             if method == "CONNECT":
                 self._open_tunnel(conn, target, rest, rec, upstream)
             else:
-                self._forward_http(conn, method, target, headers, rec, upstream)
+                self._forward_http(conn, method, target, headers, rest, rec, upstream)
         except Refuse as refused:
             rec["reason"], status = refused.reason, refused.status
         except OSError:
@@ -314,9 +379,12 @@ class Proxy:
             headers.append((name, value.strip()))
         return parts[0], parts[1], headers, rest
 
-    def _check_host(self, host: str, port: str, want: str, rec: dict) -> None:
+    def _check_host(self, host: str, port: str, want: str, rec: dict) -> bool:
+        """The host rules; True when host:port is a listed private pair, which skips them (and nothing else)."""
         rec["host"] = normalize(host) if LOGGABLE.fullmatch(normalize(host)) else "-"
         rec["port"] = port if port.isdigit() and len(port) <= 5 else "-"
+        if self.private.allows(host, port):
+            return True
         if is_ip_literal(host):
             raise Refuse(403, "ip-literal")
         if port != want:
@@ -325,16 +393,32 @@ class Proxy:
             raise Refuse(400, "bad-host")
         if not self.allowlist.allows(host):
             raise Refuse(403, "not-allowed")
+        return False
 
-    def _dial(self, host: str, port: int) -> socket.socket:
-        """Resolve once, refuse if any answer is not public, and connect to exactly the checked addresses."""
-        try:
-            infos = self.resolve(normalize(host), port, 0, socket.SOCK_STREAM)
-        except (OSError, UnicodeError):
-            raise Refuse(502, "resolve") from None
+    def _dial(self, host: str, port: int, private: bool = False) -> socket.socket:
+        """Resolve once, refuse if any answer is not public, and connect to exactly the checked addresses. For a
+        private pair: a literal is connected as it is, an alias must resolve to private addresses only."""
+        host = normalize(host)
+        if private and host.startswith("["):
+            infos = [(socket.AF_INET6, 0, 0, "", (ipaddress.IPv6Address(host[1:-1]).compressed, port, 0, 0))]
+        elif private and host not in HOST_ALIASES:
+            infos = [(socket.AF_INET, 0, 0, "", (host, port))]
+        else:
+            try:
+                infos = self.resolve(host, port, 0, socket.SOCK_STREAM)
+            except (OSError, UnicodeError):
+                raise Refuse(502, "resolve") from None
         if not infos:
             raise Refuse(502, "resolve")
         for info in infos:
+            if private:
+                try:
+                    ok = private_address(ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]))
+                except ValueError:
+                    ok = False
+                if not ok:
+                    raise Refuse(403, "private-alias-not-private")
+                continue
             reason = address_refusal(str(info[4][0]))
             if reason:
                 raise Refuse(403, reason)
@@ -351,17 +435,18 @@ class Proxy:
         host, sep, port = target.rpartition(":")
         if not sep:
             host, port = target, ""
-        self._check_host(host, port, "443", rec)
-        upstream = self._dial(host, 443)
+        private = self._check_host(host, port, "443", rec)
+        upstream = self._dial(host, int(port) if private else 443, private)
         opened.append(upstream)
-        rec.update(result="allowed", reason="ok")
+        rec.update(result="allowed", reason="private" if private else "ok")
         conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
         if rest:
             upstream.sendall(rest)
             rec["out"] += len(rest)
         self._relay(conn, upstream, rec, both=True)
 
-    def _forward_http(self, conn, method: str, target: str, headers: list, rec: dict, opened: list) -> None:
+    def _forward_http(self, conn, method: str, target: str, headers: list, early: bytes, rec: dict,
+                      opened: list) -> None:
         if not target.lower().startswith("http://"):
             raise Refuse(400, "bad-target")
         rest = target[7:]
@@ -373,7 +458,9 @@ class Proxy:
         host, sep, port = authority.rpartition(":")
         if not sep or authority.endswith("]"):
             host, port = authority, "80"
-        if method not in ("GET", "HEAD"):
+        # A private pair takes every method and a body: it is the lead's own endpoint, and a model API is POST.
+        private = self.private.allows(host, port)
+        if method not in ("GET", "HEAD") and not private:
             rec["host"] = normalize(host) if LOGGABLE.fullmatch(normalize(host)) else "-"
             raise Refuse(405, "method")
         self._check_host(host, port, "80", rec)
@@ -382,18 +469,24 @@ class Proxy:
             raise Refuse(400, "bad-header")
         names = {name.lower() for name, _ in headers}
         length = [v for n, v in headers if n.lower() == "content-length"]
-        if "transfer-encoding" in names or any(v != "0" for v in length):
+        if not private and ("transfer-encoding" in names or any(v != "0" for v in length)):
             raise Refuse(400, "body")
         listed = {t.strip().lower() for n, v in headers if n.lower() == "connection" for t in v.split(",")}
-        kept = [f"{n}: {v}\r\n" for n, v in headers if n.lower() not in HOP_BY_HOP | listed]
-        request = (f"{method} {path} HTTP/1.1\r\nHost: {normalize(host)}\r\n" + "".join(kept) +
-                   "Connection: close\r\n\r\n").encode("ascii")
-        upstream = self._dial(host, 80)
+        drop = HOP_BY_HOP - ({"content-length", "transfer-encoding"} if private else set()) | listed
+        kept = [f"{n}: {v}\r\n" for n, v in headers if n.lower() not in drop]
+        request = (f"{method} {path} HTTP/1.1\r\nHost: {normalize(authority if private else host)}\r\n" +
+                   "".join(kept) + "Connection: close\r\n\r\n").encode("ascii")
+        upstream = self._dial(host, int(port) if private else 80, private)
         opened.append(upstream)
-        rec.update(result="allowed", reason="ok")
+        rec.update(result="allowed", reason="private" if private else "ok")
         upstream.sendall(request)
         rec["out"] += len(request)
-        self._relay(conn, upstream, rec, both=False)  # no later client bytes reach upstream: no pipelined smuggling
+        if private and early:
+            upstream.sendall(early)
+            rec["out"] += len(early)
+        # To a public host no later client byte reaches upstream (no pipelined smuggling); a private pair gets the
+        # rest of the body, both ways, until one side closes (Connection: close ends it after one answer).
+        self._relay(conn, upstream, rec, both=private)
 
     def _relay(self, conn: socket.socket, upstream: socket.socket, rec: dict, both: bool) -> None:
         selector = selectors.DefaultSelector()
@@ -547,8 +640,13 @@ def run_proxy(args) -> int:
     except (OSError, ValueError) as error:
         print(f"egress-proxy: allowlist: {error}", file=sys.stderr)
         return 2
+    try:
+        private = Private(args.private)
+    except ValueError as error:
+        print(f"egress-proxy: {error}", file=sys.stderr)
+        return 2
     proxy = Proxy(allowlist, log_path=args.log, idle_timeout=args.idle_timeout, connect_timeout=args.connect_timeout,
-                  max_conns=args.max_conns, max_line=args.max_line, max_header=args.max_header)
+                  max_conns=args.max_conns, max_line=args.max_line, max_header=args.max_header, private=private)
     if args.unix:
         try:
             proxy.bind_unix(args.unix)
@@ -559,7 +657,8 @@ def run_proxy(args) -> int:
     else:
         proxy.bind(args.bind, args.port)
         where = f"{args.bind}:{proxy.port}"
-    return serve(proxy, f"listening on {where}, {len(allowlist.entries)} allowlist entries")
+    pairs = f", {len(private.pairs)} private pairs" if private.pairs else ""
+    return serve(proxy, f"listening on {where}, {len(allowlist.entries)} allowlist entries{pairs}")
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -571,6 +670,9 @@ def main(argv: Optional[list] = None) -> int:
                         help="relay mode: pipe each TCP connection on --bind/--port to the Unix socket at PATH")
     parser.add_argument("--allow-file", action="append", default=[], help="allowlist file, may repeat")
     parser.add_argument("--allow", action="append", default=[], help="allowlist entry, may repeat")
+    parser.add_argument("--private", action="append", default=[], metavar="HOST:PORT",
+                        help="a private or loopback address (or the container host alias) and one port that pass "
+                             "as they are, may repeat; nothing else private passes")
     parser.add_argument("--log", help="log file, appended (default standard error)")
     parser.add_argument("--idle-timeout", type=float, default=60.0)
     parser.add_argument("--connect-timeout", type=float, default=10.0)

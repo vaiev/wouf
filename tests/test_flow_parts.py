@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import importlib
 import sys
 import unittest
 from importlib.machinery import SourceFileLoader
@@ -15,9 +16,16 @@ HEAD = "3f2a9c1e5b7d4f60a8b9c0d1e2f3a4b5c6d7e8f9"
 
 def team_module():
     sys.path.insert(0, str(SOURCE / "bin"))
+    engine = importlib.import_module("teamlib.engine")
+    egress = engine.EGRESS[:]
     loader = SourceFileLoader("wouf_team_parts", str(SOURCE / "bin" / "teamlib" / "flow.py"))
     module = module_from_spec(spec_from_loader("wouf_team_parts", loader))
     loader.exec_module(module)
+    # This copy of flow.py fills engine.EGRESS with its own prepare_egress when it runs; the hook belongs to the
+    # teamlib.flow bin/team imports, so put it back (or fill it from that module when nothing held it yet).
+    engine.EGRESS[:] = egress or [importlib.import_module("teamlib.flow").prepare_egress]
+    # bin/team imports every teamlib module; teamlib.evidence fills gate.EVIDENCE, without which a step stops.
+    importlib.import_module("teamlib.evidence")
     return module
 
 

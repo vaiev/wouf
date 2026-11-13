@@ -4,7 +4,7 @@
 
 WOUF is an agent team in a folder, set up with the AI tool you already use. You talk to one lead. The lead hands tasks to a worker, has a reviewer check the result, asks a decider for the hard calls and tells you what happened.
 
-It is not a product or a platform, and it does not replace your agent CLI. It is a folder of plain instructions plus small helper scripts written in standard-library Python. You copy that folder into a project and keep using your own agent CLI, such as Claude Code, Codex CLI or another CLI that reads `AGENTS.md`.
+WOUF does not replace your agent CLI. It is a folder of plain instructions plus small helper scripts written in standard-library Python. You copy that folder into a project and keep using your own agent CLI, such as Claude Code, Codex CLI or another CLI that reads `AGENTS.md`.
 
 WOUF is only the example name. You can call your team whatever you like.
 
@@ -16,7 +16,7 @@ Everything lives in one folder, `.agents/`, next to your work:
 - the roles: lead, worker, review, decide and specialist, in `.agents/roles/`
 - the skills the lead loads for a step, such as writing a brief or reviewing and merging, in `.agents/skills/`
 - your own team: settings, bots, board, decisions, schedule, knowledge and logs, in `.agents/team/`
-- small helper scripts in `.agents/bin/`, mainly `team` for bots, runs and checks, `log` for receipts and search, and `secret` for keys
+- small helper scripts in `.agents/bin/`, mainly `team` for bots, runs and checks, `log` for run records and search, and `secret` for keys
 
 The board, the decisions, the schedule and the knowledge are files you can open and read. An update replaces the shared pack and leaves `.agents/team/` as it is.
 
@@ -44,4 +44,4 @@ The safety part of this guide explains the sandbox modes and their trade-offs, a
 
 ## Status
 
-This guide describes the repository as it is on `main`. Version 0.1.0 is dated 2026-11-06. See the changelog for what it contains.
+This guide describes the repository as it is on `main`. Version 0.2.0, dated 2026-11-12, is the latest release. See the changelog for what it contains.

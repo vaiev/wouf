@@ -112,7 +112,7 @@
       <li><h3 class="title-l">A check before review</h3><p>The gate command you configure, your tests for example, runs before review without an AI call. This repository's own gate adds a complexity check (<code class="mono">scripts/complexity.py</code>) that you can copy into yours.</p></li>
       <li><h3 class="title-l">Side by side, checked first</h3><p>For a batch, WOUF checks that the tasks' declared file areas do not overlap before starting them together.</p></li>
       <li><h3 class="title-l">Shared between teams</h3><p>Teams can exchange signed handoffs through a shared Git repository, without a dedicated WOUF server.</p></li>
-      <li><h3 class="title-l">Work you can follow</h3><p>Team events and readable summaries can live in your Git repository, so you can follow the work over time.</p></li>
+      <li><h3 class="title-l">Work you can follow</h3><p>Team events and readable summaries can live in your Git repository, so you can follow the work over time. The key that signs WOUF's own change receipts has the fingerprint <code class="mono">SHA256:kQfxHJ5w0JRzMT4JIburS5E0zGHlwk47+Zvauk5Ac1w</code> (ED25519); it is published in this repository and here, so compare it with a second copy, for example the release note of the tag, before you trust it.</p></li>
     </ul>
   </section>
 
@@ -126,7 +126,7 @@
           <summary>Never opened a terminal? Here is how.</summary>
           <div class="terminal-help-body">
             <p><b>On a Mac:</b> make the folder in Finder. Open the Terminal app, type <kbd>cd</kbd> and a space, drag the folder into the window and press Return.</p>
-            <p><b>On Windows 11:</b> open the folder in File Explorer, right-click an empty spot in it and choose “Open in Terminal”.</p>
+            <p><b>On Windows 11:</b> the lead and the team run inside WSL 2, the Linux that Windows can add, because the helpers need a POSIX system, as the setup guide says. Open the folder in File Explorer, right-click an empty spot in it, choose “Open in Terminal”, then type <kbd>wsl</kbd> and press Enter to work in WSL 2.</p>
             <p>Now type the name of your assistant, for example <kbd>claude</kbd>, and press Enter.</p>
           </div>
         </details></li>
@@ -170,7 +170,7 @@
 
   <footer class="site-foot">
     <p class="foot-made"><a class="vaiev" href="https://vaiev.com"><svg class="logo" aria-hidden="true"><use href="icons.svg#vaiev-symbol"/></svg>VAIEV</a></p>
-    <p class="foot-legal"><span>© 2026 VAIEV · WOUF is open source under the Apache 2.0 license</span><a class="icon-btn press gh" href="https://github.com/vaiev/wouf" aria-label="WOUF on GitHub"><svg class="icon icon-s" aria-hidden="true"><use href="icons.svg#github"/></svg></a><a href="docs.html">Docs</a><a href="changelog.html">Changelog</a><a href="contribute.html">Contribute</a><a href="https://vaiev.com/privacy/">Privacy</a></p>
+    <p class="foot-legal"><span>© 2026 VAIEV · WOUF is open source under the Apache 2.0 license</span><a class="icon-btn press gh" href="https://github.com/vaiev/wouf" aria-label="WOUF on GitHub"><svg class="icon icon-s" aria-hidden="true"><use href="icons.svg#github"/></svg></a><a href="docs.html">Docs</a><a href="changelog.html">Changelog</a><a href="contribute.html">Contribute</a><a href="https://vaiev.com/privacy/">Privacy &amp; contact</a></p>
   </footer>
 </main>
 <span id="end" hidden></span>

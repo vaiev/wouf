@@ -4,7 +4,7 @@ A small agent team; its name is in `team/config.ini` (WOUF below). Paths are rel
 
 ## 1. Who you are
 
-- The human's first message starts with "without WOUF", or `enabled = no`: help as a plain assistant, leave `team/` alone.
+- The human's first message starts with "without WOUF": help as a plain assistant, leave `team/` alone.
 - A bot ("WOUF Worker"): follow your prompt, `rules.md` and your role; skip the rest.
 - Otherwise you are WOUF, the lead: load `rules.md` and `roles/lead.md`.
 

@@ -27,6 +27,7 @@ from pathlib import Path
 from teamlib import engine, gate, run
 from teamlib.core import (PROJECT, active_bots, config, copy_regular, die, display, env_dir, get, lead_log, mask_secrets, put,
                           read_json, say, team_dir, visible, words)
+from teamlib.core import task_problem
 
 # Always on: every namespace of its own (user, PID, network, IPC, UTS, cgroup), no host environment variable, no
 # controlling terminal, no capability, and the sandbox dies with the process that started it. --unshare-user is
@@ -157,6 +158,23 @@ def run_mounts(binds: dict) -> list[str]:
         source = binds.get(name)
         if source is not None and os.path.exists(source):
             argv += ["--bind" if writable else "--ro-bind", os.fspath(source), inside]
+    return argv
+
+
+def task_binds(stage_dir, task: str, login_dir=None) -> list[str]:
+    """The bwrap mounts of one run with a storage per task (plan T-0167, option B), all writable: the task's
+    <stage_dir>/box/work at /bot/tasks/<task>, box/home at /bot/home, box/logs at /bot/logs, and login_dir at
+    /bot/login only when it is not None. /bot itself stays part of the sandbox's own root, which is new for each run,
+    so no other task's folder, HOME or receipts is there. A task id that could name another path is refused. Builds
+    the arguments only: no file is made and no process started."""
+    problem = task_problem(task)
+    if problem:
+        raise ValueError(problem)
+    box = Path(stage_dir) / "box"
+    argv = ["--bind", os.fspath(box / "work"), f"/bot/tasks/{task}", "--bind", os.fspath(box / "home"), "/bot/home",
+            "--bind", os.fspath(box / "logs"), "/bot/logs"]
+    if login_dir is not None:
+        argv += ["--bind", os.fspath(login_dir), "/bot/login"]
     return argv
 
 
@@ -296,14 +314,16 @@ def egress_chosen(egress: dict) -> dict:
 
 def egress_stage(stage_dir: Path) -> dict:
     """With network = egress: the proxy program into ctl/ (both sandboxes run it from there, read-only) and what
-    the run's spec gets; nothing with none."""
+    the run's spec gets; nothing with none. bwrap_egress is the proxy sandbox's input; egress records the lists in
+    run.json as container mode does (egress.private), which teamlib.engine.egress_end leaves alone in bwrap mode."""
     if not EGRESS:
         return {}
     source = Path(EGRESS[0]["source"])
     if source.is_symlink() or not source.is_file():
         die(f"the egress proxy {source} is not a regular file; name egress_proxy.py in [egress] proxy")
     put(stage_dir / "ctl" / PROGRAM, source.read_text(encoding="utf-8"))
-    return {"network": "egress", "bwrap_egress": {"allow": list(EGRESS[0]["allow"])}}
+    lists = {"allow": list(EGRESS[0]["allow"]), "private": list(EGRESS[0].get("private", []))}
+    return {"network": "egress", "bwrap_egress": lists, "egress": dict(lists)}
 
 
 def egress_launch(spec: dict, script: str) -> tuple[str, list[str]]:
@@ -326,6 +346,7 @@ def proxy_argv(spec: dict) -> list[str]:
     etc = [arg for name in PROXY_ETC if os.path.exists(f"/etc/{name}") for arg in ("--ro-bind", f"/etc/{name}",
                                                                                    f"/etc/{name}")]
     allow = [arg for host in spec["bwrap_egress"]["allow"] for arg in ("--allow", host)]
+    allow += [arg for pair in spec["bwrap_egress"].get("private", []) for arg in ("--private", pair)]
     return [shutil.which("bwrap") or "bwrap", "--unshare-all", "--share-net", "--unshare-user", "--clearenv",
             "--new-session", "--cap-drop", "ALL", *disable, *host_mounts(), *etc, *PRIVATE, "--bind", ctl, inside,
             "--ro-bind", os.path.join(ctl, PROGRAM), program, "--chdir", "/", "--setenv", "PATH", INSIDE_PATH, "--",

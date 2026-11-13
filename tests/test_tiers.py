@@ -29,11 +29,11 @@ class ResolveTest(unittest.TestCase):
                 self.assertEqual(engine.tier_model(self.ini, "alpha", tier), (model, tier))
 
     def test_an_empty_or_missing_mid_falls_back_to_strong(self) -> None:
-        self.assertEqual(engine.tier_model(self.ini, "beta", "mid"), ("big", "mid→strong"))
-        self.assertEqual(engine.tier_model(self.ini, "gamma", "mid"), ("", "mid→strong"))
+        self.assertEqual(engine.tier_model(self.ini, "beta", "mid"), ("big", "mid->strong"))
+        self.assertEqual(engine.tier_model(self.ini, "gamma", "mid"), ("", "mid->strong"))
 
     def test_the_label_names_the_tier_actually_used(self) -> None:
-        self.assertEqual(engine.tier_label("mid", "strong"), "mid→strong")
+        self.assertEqual(engine.tier_label("mid", "strong"), "mid->strong")
         self.assertEqual(engine.tier_label("mid", "mid"), "mid")
         self.assertEqual(engine.tier_label("light", "light"), "light")
 
@@ -68,10 +68,10 @@ class RunTierTest(unittest.TestCase):
     def test_mid_without_a_model_runs_on_strong(self) -> None:
         plan = self.plan("--tier", "mid")
         self.assertEqual(plan["argv"][-2:], ["--model", "big"])
-        self.assertEqual(plan["tier"], "mid→strong")
+        self.assertEqual(plan["tier"], "mid->strong")
         beta = self.plan("--tier", "mid", "--runner", "beta")
         self.assertNotIn("-m", beta["argv"])
-        self.assertEqual(beta["tier"], "mid→strong")
+        self.assertEqual(beta["tier"], "mid->strong")
 
     def test_an_explicit_model_wins_over_the_tier(self) -> None:
         plan = self.plan("--tier", "mid", "--model", "exact-model-1")
@@ -82,7 +82,7 @@ class RunTierTest(unittest.TestCase):
         for member in ("scout", "bugfixer"):
             with self.subTest(member=member):
                 self.assertIn("\ntier: mid\n", self.p.bot_file(member).read_text())
-                self.assertEqual(self.plan(member=member)["tier"], "mid→strong")
+                self.assertEqual(self.plan(member=member)["tier"], "mid->strong")
 
     def test_an_unknown_tier_is_refused(self) -> None:
         for tier in ("medium", "MID", "strong "):
@@ -118,7 +118,7 @@ class ReceiptTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         log = subprocess.run([sys.executable, str(self.p.root / ".agents" / "bin" / "log"), "task", "T-1"],
                              capture_output=True, text=True, env=self.p.env).stdout
-        self.assertIn("worker via fake mid→strong default", log)
+        self.assertIn("worker via fake mid->strong default", log)
 
 
 if __name__ == "__main__":

@@ -16,8 +16,14 @@ from pathlib import Path
 
 from test_flow_parts import HEAD, team_module
 from test_team_cli import KEY, Project
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
 
 FUTURE = "2999-01-01T00:00:00+00:00"
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class RunFlowListTest(unittest.TestCase):

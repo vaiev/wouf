@@ -6,7 +6,7 @@ from __future__ import annotations
 import importlib
 import re
 
-from teamlib.core import CLASSES, KNOWN, PACK, die, mask_secrets, say, visible
+from teamlib.core import KNOWN, PACK, die, known_classes, mask_secrets, say, visible
 
 USAGE = """
   team skill NAME                     only the "Sequence of work" of skills/NAME.md, instead of the whole file
@@ -81,8 +81,9 @@ def do_brief(args: list[str]) -> int:
     if len(positional) != 1 or "--class" not in opts:
         die(usage)
     klass = opts["--class"]
-    if klass not in CLASSES:
-        die(f"class {visible(klass)!r} is not one of {', '.join(CLASSES)}")
+    classes = known_classes()
+    if klass not in classes:
+        die(f"class {visible(klass)!r} is not one of {', '.join(classes)}")
     objective = positional[0].strip()
     if not objective or "\n" in objective or "\r" in objective:
         die("the objective is one sentence on one line")

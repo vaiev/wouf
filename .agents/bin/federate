@@ -355,8 +355,9 @@ def check_body(kind: str, body, peer: str | None = None) -> None:
         if len(fields["Objective"]) > 200:
             raise Refused("the brief's Objective: line must be at most 200 characters")
         klass = fields["Class"].lower()
-        if klass not in team.CLASSES:
-            raise Refused(f"the brief's Class: is not one of {', '.join(team.CLASSES)}")
+        classes = team.known_classes()
+        if klass not in classes:
+            raise Refused(f"the brief's Class: is not one of {', '.join(classes)}")
         if klass == "security" and not fields.get("Threat model"):
             raise Refused("a brief of Class: security needs a Threat model: line")
     elif kind == "decision_sync":
@@ -619,7 +620,7 @@ def apply(env: dict) -> str:
     done = subprocess.run([sys.executable, str(BIN / "log"), "add", "lead", body["task"],
                            OUTCOME[verdict.split()[0]], f"{peer}: {verdict}"[:120]],
                           capture_output=True, text=True,
-                          env={**os.environ, "WOUF_LOG_DIR": str(team.team_dir() / "logs")})
+                          env={**os.environ, "WOUF_LOG_DIR": str(team.log_dir())})
     if done.returncode:
         raise Refused(f"receipt not written: {team.visible(done.stderr.strip()[:200])}")
     return "a lead receipt in the log"

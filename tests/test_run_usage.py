@@ -16,7 +16,9 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, wouf_env  # noqa: E402
 
 BIN = Path(__file__).resolve().parents[1] / ".agents" / "bin"
 sys.path.insert(0, str(BIN))
@@ -32,6 +34,11 @@ NUMBERS = re.compile(r"tokens=(\d+/\d+/\d+/\d+|unknown) skipped=\d+")
 
 def usage(i, cr, cw, o):
     return {"input_tokens": i, "cache_read_input_tokens": cr, "cache_creation_input_tokens": cw, "output_tokens": o}
+
+
+def setUpModule() -> None:
+    # No test of this module sees a WOUF_* of the caller; a test's own wouf_env(...) adds what it sets.
+    isolate_wouf_env()
 
 
 class Adapter(unittest.TestCase):
@@ -150,7 +157,7 @@ class Collection(unittest.TestCase):
         self.assertEqual(runlib.run_event(spec, "run.finished", "done", None, tokens="1/2/3/4")[3]["tokens"],
                          "1/2/3/4")
         self.assertNotIn("tokens", runlib.run_event(spec, "run.finished", "done", None, tokens="unknown")[3])
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, WOUF_TEAM_DIR=folder):
+        with tempfile.TemporaryDirectory() as folder, wouf_env(WOUF_TEAM_DIR=folder):
             (Path(folder) / "logs").mkdir()
             runlib.receipt("T-7", "done", "worker returned", "1/2/3/4")
             runlib.receipt("T-7", "failed", "worker exit 1", "unknown")
@@ -177,7 +184,7 @@ class StatsLines(unittest.TestCase):
         self.transcripts, self.events, self.team = root / "transcripts", root / "events", root / "team"
         for folder in (self.transcripts, self.events, self.team / "logs"):
             folder.mkdir(parents=True)
-        env = patch.dict(os.environ, WOUF_EVENTS_DIR=str(self.events), WOUF_TEAM_DIR=str(self.team))
+        env = wouf_env(WOUF_EVENTS_DIR=str(self.events), WOUF_TEAM_DIR=str(self.team))
         env.start()
         self.addCleanup(env.stop)
         now = datetime.now(timezone.utc)

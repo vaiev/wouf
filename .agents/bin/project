@@ -25,11 +25,9 @@ import sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-BIN = Path(__file__).resolve().parent
-
 
 def helper(name: str):
-    loader = SourceFileLoader(f"wouf_{name}", str(BIN / name))
+    loader = SourceFileLoader(f"wouf_{name}", str(Path(__file__).resolve().parent / name))
     module = importlib.util.module_from_spec(importlib.util.spec_from_loader(f"wouf_{name}", loader))
     loader.exec_module(module)
     return module
@@ -38,68 +36,22 @@ def helper(name: str):
 federate = helper("federate")
 team = federate.team
 
-TO_FILL = "TO FILL"
-PHASES = ("INIT", "CONCEPT", "REALIZE", "VERIFY")
-# Stems in the goal or in a matched path that make a task security work: auth, secrets, guards, network.
-SECURITY = ("auth", "login", "logout", "passw", "secret", "token", "credential", "oauth", "session", "cookie",
-            "csrf", "cors", "crypt", "cert", "tls", "ssl", "ssh", "firewall", "guard", "permission", "sandbox",
-            "network", "netzwerk", "anmeld", "schlüssel", "berechtig", "zugang")
-CLASS_WORDS = (
-    ("decision", ("decide", "choose", "which", "entscheid", "wählen", "auswahl")),
-    ("analysis", ("investigate", "analy", "why", "audit", "measure", "untersuch", "warum", "prüfen")),
-    ("plan", ("plan ", "packages", "roadmap", "planen", "planung", "pakete")),
-    ("complex", ("migrat", "refactor", "architecture", "redesign", "rewrite", "umbau", "architektur")),
-    ("mechanical", ("typo", "rename", "bump", "format", "lint", "tippfehler", "umbenenn")),
-)
 STOP = {"the", "and", "for", "with", "add", "into", "from", "that", "this", "our", "new", "make", "use", "fix",
         "change", "a", "an", "to", "of", "in", "on", "we", "is", "are", "der", "die", "das", "und", "mit", "für"}
 SKIP_DIRS = {".git", "node_modules", "vendor", "dist", "build", "__pycache__", ".venv", "venv", "target"}
 MAX_FILES = 20000
 MAX_PATHS = 8
-# The sections .agents/skills/brief.md (step 2) and rules.md section 6 ask of every brief, each one non-empty.
-SECTIONS = ("Acceptance criteria", "Scope", "Out of scope", "Inputs", "Constraints", "Expected output")
-NAMES = ("Task", "Class", "Paths", "Objective", "Depends", "Threat model", "Scout") + SECTIONS
-# A section starts with "Name:" (its text on that line or the lines below) or a Markdown heading "## Name".
-SECTION = re.compile(r"^(?:#{1,6}[ \t]+(%s)[ \t]*:?[ \t]*$|(%s):[ \t]*(.*?))\s*$" % (("|".join(NAMES),) * 2), re.I)
+
+
+def leaf(name: str):
+    """A teamlib module: the class and the brief check come only from there (teamlib.classify, teamlib.goal)."""
+    return importlib.import_module(f"teamlib.{name}")
 
 
 def die(message: str, code: int = 2) -> None:
     team.say(f"project: {message}", err=True)
     raise SystemExit(code)
 
-
-def fields(text: str) -> dict:
-    out: dict = {}
-    for line in text.splitlines():
-        found = re.match(r"^(Task|Class|Paths|Objective|Threat model|Depends):[ \t]*(.*?)\s*$", line)
-        if found and found.group(1) not in out:
-            out[found.group(1)] = found.group(2)
-    return out
-
-
-def sections(text: str) -> dict:
-    """Each named section's text (the rest of its line and the lines up to the next section or heading)."""
-    out: dict = {}
-    current = None
-    for line in text.splitlines():
-        found = SECTION.match(line)
-        if found:
-            name = next(n for n in NAMES if n.lower() == (found.group(1) or found.group(2)).lower())
-            current = name if name not in out else None
-            if current:
-                out[current] = (found.group(3) or "").strip()
-        elif line.startswith("#"):
-            current = None
-        elif current and line.strip():
-            out[current] = (out[current] + "\n" + line.strip()).strip()
-    return out
-
-
-def depends(text: str) -> list[str]:
-    return team.words(fields(text).get("Depends", ""))
-
-
-# ---------------------------------------------------------------- INIT
 
 def repo_files(repo: Path) -> list[str]:
     if (repo / ".git").exists():
@@ -139,27 +91,15 @@ def matched_paths(goal: str, files: list[str]) -> list[str]:
     return [f"{f}/**" for f in cover][:MAX_PATHS]
 
 
-def classify(goal: str, paths: list[str]) -> str:
-    text = goal.lower()
-    if any(stem in text or any(stem in p.lower() for p in paths) for stem in SECURITY) or \
-            re.search(r"\bkeys?\b", text):
-        return "security"
-    for klass, stems in CLASS_WORDS:
-        if any(stem in text for stem in stems):
-            return klass
-    return "complex" if len(paths) >= MAX_PATHS else "standard"
-
-
-def next_task() -> str:
-    board = team.team_dir() / "board.md"
-    taken = [int(n) for n in re.findall(r"^\| T-(\d+) \|", board.read_text(encoding="utf-8"), re.M)] \
-        if board.is_file() else []
-    return f"T-{max(taken, default=0) + 1}"
+def check(task: str) -> None:
+    try:
+        federate.check_task(task)
+    except federate.Refused as why:
+        die(str(why))
 
 
 def cmd_brief(args: list[str]) -> int:
-    opts, goal = {"--repo": ".", "--task": ""}, []
-    it = iter(args)
+    opts, goal, it = {"--repo": ".", "--task": ""}, [], iter(args)
     for arg in it:
         if arg in opts:
             opts[arg] = next(it, "")
@@ -171,43 +111,15 @@ def cmd_brief(args: list[str]) -> int:
     repo = Path(opts["--repo"]).resolve()
     if not repo.is_dir():
         die(f"--repo {team.visible(opts['--repo'])}: no such folder")
-    task = opts["--task"] or next_task()
-    try:
-        federate.check_task(task)
-    except federate.Refused as why:
-        die(str(why))
-    paths = matched_paths(objective, repo_files(repo))
-    klass = classify(objective, paths)
+    task = opts["--task"] or leaf("goal").board_next_task()
+    check(task)
+    files = repo_files(repo)
+    paths = matched_paths(objective, files)
+    klass = leaf("goal").class_for(objective, paths, files)
     if not paths:
         team.say("project: no path in the repository matches the goal; fill Paths: before dispatch", err=True)
-    # A plan names the goal and no Paths: the planner returns the packages and their paths.
-    lines = [f"Task: {task}", f"Class: {klass}",
-             *([] if klass == "plan" else [f"Paths: {' '.join(paths) or TO_FILL}"]),
-             f"Objective: {objective}", "Depends: none", *(f"{name}: {TO_FILL}" for name in SECTIONS)]
-    if klass == "security":
-        lines.append(f"Threat model: {TO_FILL}: what an attacker can reach through "
-                     f"{', '.join(paths) or 'these paths'}, and what must stay true")
-    team.say("\n".join(team.visible(line) for line in lines))
+    team.say("\n".join(team.visible(line) for line in leaf("goal").draft_brief(task, klass, paths, objective)))
     return 0
-
-
-def brief_problems(text: str) -> list[str]:
-    """The rules of .agents/skills/brief.md: Task, Class, Objective and every section; Paths except for a plan;
-    a Threat model for security."""
-    found = sections(text)
-    klass = found.get("Class", "").lower()
-    problems = []
-    try:
-        federate.check_task(found.get("Task", ""))
-    except federate.Refused as why:
-        problems.append(f"Task: {why}")
-    if klass not in team.CLASSES:
-        problems.append(f"the brief needs a Class: line, one of {', '.join(team.CLASSES)}")
-    need = ["Objective", *([] if klass == "plan" else ["Paths"]), *SECTIONS,
-            *(["Threat model"] if klass == "security" else [])]
-    problems += [f"the brief needs {name} (non-empty)" for name in need if not found.get(name)]
-    problems += [f"line {n} still says {TO_FILL}" for n, line in enumerate(text.splitlines(), 1) if TO_FILL in line]
-    return problems
 
 
 def cmd_check(args: list[str]) -> int:
@@ -217,7 +129,7 @@ def cmd_check(args: list[str]) -> int:
         text = Path(args[0]).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         die(f"cannot read {team.visible(args[0])}: {team.visible(str(error))}")
-    problems = brief_problems(text)
+    problems = leaf("goal").brief_problems(text)
     for problem in problems:
         team.say(team.visible(f"open: {problem}"))
     if not problems:
@@ -225,47 +137,15 @@ def cmd_check(args: list[str]) -> int:
     return 1 if problems else 0
 
 
-# ---------------------------------------------------------------- CONCEPT
-
-def waves(plan: dict) -> tuple[list[list[str]], list[str]]:
-    """Kahn's order in levels; problems name unknown dependencies and cycles."""
-    problems = [f"{task} depends on {dep}, which is not in the plan"
-                for task, deps in sorted(plan.items()) for dep in deps if dep not in plan]
-    if problems:
-        return [], problems
-    left, done, out = dict(plan), set(), []
-    while left:
-        wave = sorted(t for t, deps in left.items() if set(deps) <= done)
-        if not wave:
-            return out, [f"cycle among: {', '.join(sorted(left))}"]
-        out.append(wave)
-        done.update(wave)
-        for task in wave:
-            del left[task]
-    return out, []
-
-
 def cmd_deps(args: list[str]) -> int:
     as_json = "--json" in args
     folders = [a for a in args if a != "--json"]
     if len(folders) != 1 or not Path(folders[0]).is_dir():
         die("usage: project deps FOLDER [--json]")
-    plan, source, unread = {}, {}, []
-    for path in sorted(Path(folders[0]).glob("*.md")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            unread.append(f"cannot read {path.name} (not UTF-8 text)")
-            continue
-        task = fields(text).get("Task") or path.stem
-        if task in plan:
-            unread.append(f"{task} is in two briefs: {source[task]}, {path.name}")
-            continue
-        plan[task], source[task] = depends(text), path.name
-    order, problems = waves(plan)
-    problems = unread + problems
+    found = leaf("goal").plan_of_briefs(Path(folders[0]))
+    order, plan, problems = found["waves"], found["depends"], found["problems"]
     if as_json:
-        team.say(json.dumps({"waves": order, "depends": plan, "problems": problems}, indent=1))
+        team.say(json.dumps(found, indent=1))
     else:
         for n, wave in enumerate(order, 1):
             team.say(team.visible(f"wave {n}: {', '.join(wave)}"))
@@ -277,86 +157,15 @@ def cmd_deps(args: list[str]) -> int:
     return 1 if problems else 0
 
 
-# ---------------------------------------------------------------- REALIZE, VERIFY
-
-def task_done(task: str) -> tuple[bool, str]:
-    flow = team.read_json(team.team_dir() / "flows" / task / "state.json")
-    if flow:
-        return flow.get("status") == "ready", flow.get("status") or "new"
-    board = team.team_dir() / "board.md"
-    for line in board.read_text(encoding="utf-8").splitlines() if board.is_file() else []:
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if cells and cells[0] == task and len(cells) > 3:
-            return cells[3] == "done", cells[3] or "?"
-    return False, "unknown"
-
-
 def evidence(task: str) -> list[dict]:
-    folder = team.team_dir() / "flows" / task
-    brief_file = next((p for p in (folder / "brief.md", team.env_dir() / "lead" / f"{task}.md") if p.is_file()),
-                      None)
+    brief_file = leaf("goal").phase_brief(task)
     if brief_file is None:
         die(f"no brief or flow for {team.visible(task)}")
     try:
         text = brief_file.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         die(f"the brief of {team.visible(task)} is not UTF-8")
-    flow = team.read_json(folder / "state.json")
-    steps = flow.get("steps") or []
-    head = fields(text)
-    klass = (head.get("Class") or "standard").lower()
-    out = []
-
-    problems = brief_problems(text)
-    out.append(("fail", "; ".join(problems)) if problems else
-               ("pass", f"brief complete: Class {klass}, Paths {head.get('Paths') or 'none (a plan)'}"))
-
-    waiting = [f"{dep} ({state})" for dep in depends(text) for ok, state in [task_done(dep)] if not ok]
-    out.append(("open", f"waits for {', '.join(waiting)}") if waiting else
-               ("pass", f"dependencies done: {', '.join(depends(text))}" if depends(text) else "no dependencies"))
-
-    runs = [s for s in steps if s.get("kind") in ("worker", "bugfixer")]
-    work = [s for s in runs if s.get("outcome") == "done"]
-    gates = [s for s in steps if s.get("kind") == "gate"]
-    commit = work[-1].get("head") if work else None
-    gate = gates[-1] if gates else None
-    plans = [s["plan"] for s in work if s.get("plan")]
-    stuck = runs[-1] if runs and runs[-1].get("status") in ("blocked", "questions") else None
-    need = team.class_options(team.config(), klass)["reviews"] if klass in team.CLASSES else 1
-    # team flow's rule: with reviews = 0 a finished run ends the flow ready, with or without a head and without a
-    # gate; with reviews > 0 a finished run without a head blocks it ("made no commits").
-    if stuck:
-        out.append(("fail", f"last run {stuck['status']}: {stuck.get('why') or stuck.get('questions') or 'no reason'}"))
-    elif klass == "plan":
-        # A plan commits nothing: its evidence is the PLAN.md and draft briefs the flow recorded.
-        out.append(("pass", f"plan written: {', '.join(plans[-1][:3])}") if plans else ("open", "no plan written yet"))
-    elif not work:
-        out.append(("open", "no finished worker run yet"))
-    elif need == 0:
-        out.append(("pass", f"finished on {commit[:12]} (no gate for this class)" if commit else
-                    "no commits: results in the run's out/ (no gate for this class)"))
-    elif not commit:
-        out.append(("fail", f"the {work[-1].get('kind') or 'worker'} made no commits"))
-    elif not gate or gate.get("head") != commit:
-        out.append(("open", f"no gate on the head {commit[:12]} yet"))
-    elif gate.get("outcome") != "green":
-        out.append(("fail", f"gate red on {commit[:12]}: {gate.get('why') or 'no reason given'}"))
-    else:
-        out.append(("pass", f"gate green on {commit[:12]}"))
-
-    after = max((i for i, s in enumerate(steps) if s in work), default=-1)
-    approvals = sum(1 for s in steps[after + 1:] if s.get("kind") == "review" and s.get("verdict") == "approve")
-    status = flow.get("status") or "new"
-    state = "pass" if approvals >= need and status == "ready" else "open"
-    out.append((state, f"{approvals} of {need} approvals on the head; flow {status}"))
-
-    # A phase only counts once every phase before it passed.
-    result, blocked = [], False
-    for phase, (state, why) in zip(PHASES, out):
-        state = "open" if blocked else state
-        result.append({"phase": phase, "state": state, "evidence": why})
-        blocked = blocked or state != "pass"
-    return result
+    return leaf("goal").phase_evidence(text, team.read_json(team.team_dir() / "flows" / task / "state.json"))
 
 
 def cmd_phase(args: list[str]) -> int:
@@ -364,10 +173,7 @@ def cmd_phase(args: list[str]) -> int:
     tasks = [a for a in args if a != "--json"]
     if len(tasks) != 1:
         die("usage: project phase TASK [--json]")
-    try:
-        federate.check_task(tasks[0])
-    except federate.Refused as why:
-        die(str(why))
+    check(tasks[0])
     phases = evidence(tasks[0])
     current = next((p["phase"] for p in phases if p["state"] != "pass"), "done")
     if as_json:

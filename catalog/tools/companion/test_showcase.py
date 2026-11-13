@@ -425,5 +425,106 @@ class ShowcaseTest(unittest.TestCase):
         self.assertFalse([p for p in touched if p.startswith(str(self.t.dir))], touched)
 
 
+# T-0052: an epic whose runs carry their own ids, as a real store holds them: a review round T.r<n>, a fix round
+# T-fix<n>, a scout run T.scout. Each belongs to its package T. The docker_host user is the product's own name.
+EPIC_CONFIG = CONFIG.replace(f"{USER}@{ALIAS}", f"wouf@{ALIAS}")
+EPIC = (
+    ("09:00", "task.created", "lead", "T-9-1", {"title": "Parser", "class": "complex", "owner": "worker"}),
+    ("09:00", "task.created", "lead", "T-9-2", {"title": "Docs", "class": "standard", "owner": "worker"}),
+    ("09:01", "run.started", "lead", "T-9-1.scout", run_data("scout", "started")),
+    ("09:05", "run.finished", "lead", "T-9-1.scout", run_data("scout", "done")),
+    ("09:10", "run.started", "lead", "T-9-1", run_data("worker", "started")),
+    ("09:12", "run.started", "lead", "T-9-2", run_data("worker", "started")),
+    ("09:40", "run.finished", "lead", "T-9-1", run_data("worker", "done", ref="task/T-9-1")),
+    ("09:41", "flow.step", "lead", "T-9-1", {"kind": "gate", "status": "green"}),
+    ("09:42", "run.finished", "lead", "T-9-2", run_data("worker", "done", ref="task/T-9-2")),
+    ("09:43", "flow.step", "lead", "T-9-2", {"kind": "gate", "status": "green"}),
+    ("09:45", "run.started", "lead", "T-9-1.r1", run_data("review", "started")),
+    ("09:46", "run.started", "lead", "T-9-2.r1", run_data("review", "started")),
+    ("09:55", "run.finished", "lead", "T-9-1.r1", run_data("review", "done", verdict="changes")),
+    ("09:56", "run.finished", "lead", "T-9-2.r1", run_data("review", "done", verdict="approve")),
+    ("10:00", "run.started", "lead", "T-9-1-fix1", run_data("worker", "started")),
+    ("10:20", "run.finished", "lead", "T-9-1-fix1", run_data("worker", "done", ref="task/T-9-1")),
+    ("10:21", "flow.step", "lead", "T-9-1-fix1", {"kind": "gate", "status": "green"}),
+    ("10:22", "run.started", "lead", "T-9-1.r2", run_data("review", "started")),
+    ("10:30", "run.finished", "lead", "T-9-1.r2", run_data("review", "done", verdict="approve")),
+    ("10:31", "task.state", "lead", "T-9-1", {"state": "done", "owner": "worker"}),
+    ("10:32", "task.state", "lead", "T-9-2", {"state": "done", "owner": "worker"}),
+)
+
+
+class EpicRunsTest(unittest.TestCase):
+    def setUp(self):
+        self.t = Team(EPIC_CONFIG)
+        self.addCleanup(shutil.rmtree, self.t.tmp)
+        self.t.fill(EPIC)
+
+    def export(self, *more):
+        done = self.t.cli("T-9", "-o", str(self.t.out), *more)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        return json.loads((self.t.out / "showcase.json").read_text(encoding="utf-8")), done
+
+    def test_review_fix_and_scout_runs_belong_to_their_package(self):
+        data, _ = self.export()
+        self.assertEqual([t["id"] for t in data["tasks"]], ["T-9-1", "T-9-2"])
+        self.assertEqual([(r["task"], r["verdict"], r["round"]) for r in data["reviews"]],
+                         [("T-9-1", "changes", 1), ("T-9-2", "approve", 1), ("T-9-1", "approve", 2)])
+        self.assertEqual([(g["task"], g["status"]) for g in data["gates"]],
+                         [("T-9-1", "green"), ("T-9-2", "green"), ("T-9-1", "green")])
+        for run in ("T-9-1.scout", "T-9-1.r1", "T-9-1.r2", "T-9-1-fix1", "T-9-2.r1"):
+            self.assertIn(run, {s["task"] for s in data["steps"] if s["kind"] == "run.finished"}, run)
+        self.assertEqual(data["manifest"]["final_verdict"], "approve")
+
+    def test_time_saved_counts_every_run_of_the_epic(self):
+        data, _ = self.export()
+        serial = (4 + 30 + 30 + 10 + 10 + 20 + 8) * 60  # scout, two workers, two reviews, the fix, the second review
+        self.assertEqual(sum(s["duration_s"] or 0 for s in data["steps"]), serial)
+        self.assertEqual(data["manifest"]["wall_duration_s"], 92 * 60)
+        self.assertEqual(data["time_saved_s"], serial - 92 * 60)
+
+    def test_the_schema_id_never_passes_the_masking(self):
+        data, done = self.export("--title", "WOUF next")
+        self.assertEqual(data["manifest"]["v"], "wouf.showcase.v1")
+        page = (self.t.out / "showcase.html").read_text(encoding="utf-8")
+        self.assertIn('"v": "wouf.showcase.v1"', page)
+        # A name the caller gave stays masked (fail closed), and the output says so.
+        self.assertEqual(data["manifest"]["title"], "<user> next")
+        self.assertIn("title", done.stdout)
+        self.assertIn("masked", done.stdout)
+        # Everything else keeps its masking: the configured user is still hidden in a value.
+        self.assertNotRegex(json.dumps(data["steps"]) + json.dumps(data["tasks"]), r"(?i)(?<![a-z0-9])wouf(?![a-z0-9])")
+
+    def test_a_package_without_a_review_is_named_in_the_output(self):
+        t = Team(EPIC_CONFIG)
+        self.addCleanup(shutil.rmtree, t.tmp)
+        t.fill([row for row in EPIC if not row[3].startswith("T-9-2.")])
+        done = t.cli("T-9", "-o", str(t.out))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        data = json.loads((t.out / "showcase.json").read_text(encoding="utf-8"))
+        self.assertIsNone(data["manifest"]["final_verdict"])
+        self.assertRegex(done.stdout, r"no review verdict.*T-9-2")
+
+    def test_an_epic_takes_class_objective_and_criteria_from_its_brief(self):
+        brief = self.t.tmp / "brief.md"
+        brief.write_text("Task: T-9\nClass: plan\nObjective: Parse and document\n"
+                         "Acceptance criteria:\n- parses\n- documented\n")
+        data, _ = self.export("--brief", str(brief))
+        m = data["manifest"]
+        self.assertEqual((m["class"], m["objective"], m["acceptance_criteria"]),
+                         ("plan", "Parse and document", ["parses", "documented"]))
+
+    def test_a_run_id_in_the_store_is_no_package_of_its_own(self):
+        # Since T-0048 a board row such as T-9-1-fix1 can be a task in the store; open or not, it is a run of T-9-1.
+        self.t.event("10:33", "task.created", "lead", "T-9-1-fix1", {"title": "fix", "class": "standard",
+                                                                     "owner": "worker"})
+        data, _ = self.export()
+        self.assertEqual([t["id"] for t in data["tasks"]], ["T-9-1", "T-9-2"])
+
+    def test_package_of(self):
+        for run, package in (("T-9-1.r1", "T-9-1"), ("T-9-1-fix1", "T-9-1"), ("T-9-1.scout", "T-9-1"),
+                             ("T-9-1.r2-fix1", "T-9-1"), ("T-9-1", "T-9-1"), ("T-1.2", "T-1.2"), ("T-0019", "T-0019")):
+            self.assertEqual(showcase.package_of(run), package, run)
+
+
 if __name__ == "__main__":
     unittest.main()

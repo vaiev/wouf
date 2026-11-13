@@ -116,6 +116,14 @@ def stored_values() -> list[str]:
 # ---- end of secret patterns ----
 
 
+def next_task_id(values) -> str:
+    digits = [m.group(1) for v in values if (m := re.fullmatch(r"T-([0-9]+)", str(v).upper()))]
+    number = 1 + max((int(d) for d in digits), default=0)
+    width = max((len(d) for d in digits if len(d) > 1 and d.startswith("0")), default=0)
+    return f"T-{number:0{width}d}"
+
+
+
 def substantive_question(item: str) -> bool:
     """Whether a Questions item contains a question rather than an empty placeholder."""
     return item.strip(" .").lower() not in {"", "none", "no", "n/a", "na", "-", "nothing", "no questions", "keine"}
@@ -481,6 +489,10 @@ def team_dir() -> Path:
     return Path(os.environ.get("WOUF_TEAM_DIR") or PACK / "team").resolve()
 
 
+def log_dir() -> Path:
+    return Path(os.environ.get("WOUF_LOG_DIR") or team_dir() / "logs")
+
+
 def env_dir() -> Path:
     return team_dir() / "env"
 
@@ -599,7 +611,8 @@ def lead_log(task: str, outcome: str, signal: str) -> None:
     signal = mask_secrets(signal, KNOWN)[:120]
     done = subprocess.run([sys.executable, str(PACK / "bin" / "log"), "add", "lead", task, outcome, signal],
                           capture_output=True, text=True,
-                          env={**os.environ, "WOUF_LOG_DIR": str(team_dir() / "logs"), "WOUF_MASK": json.dumps(KNOWN)})
+                          env={**os.environ, "WOUF_LOG_DIR": str(log_dir()),
+                               "WOUF_MASK": json.dumps(KNOWN)})
     if done.returncode:
         say(f"team: receipt not written: {done.stderr.strip()[:200]}", err=True)
 
@@ -783,9 +796,31 @@ def now() -> str:
 def read_json(path: Path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # RecursionError: a record nested deeper than json can read
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def gate_result(stage: Path) -> int:
+    gate = read_json(stage / "gate.json")
+    state = gate.get("state") if gate.get("ended") else "running"  # a record without its end is not a result yet
+
+    def one(value) -> str:  # one line whatever the record holds: control characters escaped, keys masked
+        text = "".join(c if c.isprintable() else c.encode("unicode_escape").decode("ascii") for c in str(value))
+        return mask_secrets(text)
+    line = (f"state: {one(state)}; code: {one(gate.get('code'))}; head: {one(str(gate.get('head', ''))[:7])}; "
+            f"base: {one(str(gate.get('base', ''))[:7])}; started: {one(gate.get('started'))}; "
+            f"ended: {one(gate.get('ended'))}")
+    code = gate.get("code")
+    whole = all(isinstance(gate.get(k), str) and gate.get(k) for k in ("head", "base", "started", "ended"))
+    # an explicit null code is a green gate without a gate command; a missing code key is not a whole record
+    passed = whole and "code" in gate and (code is None or type(code) is int and code == 0)
+    if state == "red":
+        line += f"; why: {one(gate.get('why'))}"
+    elif state == "green" and not passed:
+        line += "; not a complete green record (head, base, started, ended and a code key, 0 or null)"
+    say(line)
+    return 0 if state == "green" and passed else 1
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -815,19 +850,43 @@ def alive(pid) -> bool:
 # ---------------------------------------------------------------- briefs and scope
 # Here, not in teamlib.flow: the gate reads the brief header and checks the paths too, and flow imports the gate.
 
+# The built-in task classes; every [class.<name>] section of config.ini whose name is CLASS_NAME adds one.
 CLASSES = ("mechanical", "standard", "complex", "security", "decision", "analysis", "plan")
+CLASS_NAME = re.compile(r"[a-z][a-z0-9-]{0,30}")
 
 
-def brief_header(text: str) -> dict:
-    """The lines of a brief that steer a flow: Task, Class (default standard), Paths (globs), Scout (yes/no)."""
+def class_sections(ini) -> tuple[list[str], list[str]]:
+    """The names of the [class.<name>] sections in config order: (valid, outside CLASS_NAME)."""
+    names = [s[len("class."):] for s in (ini.sections() if ini is not None else []) if s.startswith("class.")]
+    return [n for n in names if CLASS_NAME.fullmatch(n)], [n for n in names if not CLASS_NAME.fullmatch(n)]
+
+
+def known_classes(ini=None) -> tuple:
+    """The built-in classes, then each valid [class.<name>] of ini (default: the team's config.ini, if it can be
+    read), in config order, without duplicates."""
+    if ini is None:
+        path = team_dir() / "config.ini"
+        try:
+            if path.is_file():
+                ini = configparser.ConfigParser(interpolation=None)
+                ini.read(path)
+        except (OSError, UnicodeDecodeError, configparser.Error):
+            ini = None
+    return tuple(dict.fromkeys(CLASSES + tuple(class_sections(ini)[0])))
+
+
+def brief_header(text: str, classes=None) -> dict:
+    """The lines of a brief that steer a flow: Task, Class (default standard), Paths (globs), Scout (yes/no).
+    Class is checked against classes, by default known_classes() (the built-ins without a config)."""
     fields: dict = {}
     for line in text.splitlines():
         found = re.match(r"^(Task|Class|Paths|Scout):[ \t]*(.*?)\s*$", line)
         if found and found.group(1).lower() not in fields:
             fields[found.group(1).lower()] = found.group(2)
     klass = (fields.get("class") or "standard").lower()
-    if klass not in CLASSES:
-        die(f"Class: {klass!r} is not one of {', '.join(CLASSES)}")
+    classes = tuple(classes) if classes is not None else known_classes()
+    if klass not in classes:
+        die(f"Class: {klass!r} is not one of {', '.join(classes)}")
     scout = (fields.get("scout") or "").lower()
     return {"task": fields.get("task", ""), "class": klass, "paths": words(fields.get("paths", "")),
             "scout": True if scout == "yes" else False if scout == "no" else None}

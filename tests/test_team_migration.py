@@ -8,10 +8,16 @@ import sys
 import tarfile
 import tempfile
 import unittest
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 TEAM = ROOT / '.agents/bin/team'
 LOG = ROOT / '.agents/bin/log'
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class MigrationTest(unittest.TestCase):

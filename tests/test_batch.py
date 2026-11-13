@@ -19,6 +19,8 @@ from pathlib import Path
 
 from test_flow_parts import HEAD, SOURCE, team_module
 from test_team_cli import KEY, Project
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
 
 
 def batch_module():
@@ -46,6 +48,10 @@ def brief(task: str, paths: str, extra: str = "") -> str:
     return (f"# {task}\n\nTask: {task}\nClass: complex\nPaths: {paths}\nObjective: change {paths}\n"
             "Acceptance criteria: the gate passes\nScope: the listed paths\nOut of scope: other files\n"
             "Inputs: repository\nConstraints: standard library\nExpected output: commits and return block\n" + extra)
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class PlanTest(unittest.TestCase):
@@ -139,10 +145,12 @@ class LockTest(unittest.TestCase):
 
     def test_a_second_process_waits_for_the_lock(self) -> None:
         program = ("import fcntl, os, sys, time\nfd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR)\n"
-                   "t = time.monotonic(); fcntl.flock(fd, fcntl.LOCK_EX)\nsys.stdout.write(str(time.monotonic() - t))\n")
+                   "t = time.monotonic(); print(flush=True); fcntl.flock(fd, fcntl.LOCK_EX)\n"
+                   "sys.stdout.write(str(time.monotonic() - t))\n")
         with self.b.repo_lock():
             other = subprocess.Popen([sys.executable, "-c", program, str(self.path)], stdout=subprocess.PIPE,
                                      text=True)
+            other.stdout.readline()  # the lock is held for 1 s from when the other process is about to take it
             time.sleep(1)
         waited = float(other.communicate(timeout=10)[0])
         self.assertGreater(waited, 0.5)

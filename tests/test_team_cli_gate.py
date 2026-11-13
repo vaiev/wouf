@@ -16,6 +16,7 @@ import time
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # python3 -m unittest tests.test_team_cli_gate, too
 from test_team_cli import (  # noqa: E402
     AWS, FAKE_CLI, GITHUB_UNDERSCORE, KEY,
     LEAKED, PEM_LINES, SLACK_WORKFLOW, Project, team_module)
@@ -76,6 +77,67 @@ class GateTest(unittest.TestCase):
 
     def state(self) -> dict:
         return json.loads((self.p.root / ".agents" / "team" / "env" / "gate" / "T-1" / "gate.json").read_text())
+
+    def test_gate_result_records_and_missing(self) -> None:
+        folder = self.p.root / ".agents" / "team" / "env" / "gate" / "T-99"
+        folder.mkdir(parents=True)
+        record = {"state": "green", "code": 0, "head": "a" * 40, "base": "b" * 40,
+                  "started": "start", "ended": "end", "why": "passed"}
+        for state, code in (("green", 0), ("red", 1)):
+            record.update(state=state, why="failed check")
+            (folder / "gate.json").write_text(json.dumps(record))
+            result = self.p.team("result", "gate", "T-99")
+            self.assertEqual(result.returncode, code, result.stderr)
+            for value in (state, "aaaaaaa", "bbbbbbb", "start", "end"):
+                self.assertIn(value, result.stdout)
+            if state == "red":
+                self.assertIn("failed check", result.stdout)
+        missing = self.p.team("result", "gate", "T-404")
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("no run of T-404 for gate", missing.stderr)
+
+    def test_gate_result_running_and_invalid_records(self) -> None:
+        folder = self.p.root / ".agents" / "team" / "env" / "gate" / "T-99"
+        folder.mkdir(parents=True)
+        for record in ({"state": "running", "ended": None}, {"state": "running"}, [],
+                       {"state": "green", "ended": None, "code": 0}, {"state": "green", "code": 0}):
+            with self.subTest(record=record):
+                (folder / "gate.json").write_text(json.dumps(record))
+                result = self.p.team("result", "gate", "T-99")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                if isinstance(record, dict):
+                    self.assertIn("state: running", result.stdout)
+        whole = {"state": "green", "head": "a" * 40, "base": "b" * 40, "started": "s", "ended": "e", "code": 0}
+        for text in (json.dumps({**whole, "code": 2}), json.dumps({**whole, "code": False}),
+                     json.dumps({**whole, "code": "0"}), json.dumps({"state": "green", "ended": "x"}),
+                     json.dumps({**whole, "head": ""}), json.dumps({**whole, "base": None}),
+                     json.dumps({k: v for k, v in whole.items() if k != "code"}),  # no code key: not whole
+                     "[" * 100000 + "]" * 100000, '{"state": "green", "x": ' + "[" * 100000 + "]" * 100000 + "}"):
+            with self.subTest(text=text[:60]):
+                (folder / "gate.json").write_text(text)
+                result = self.p.team("result", "gate", "T-99")
+                self.assertEqual(result.returncode, 1, result.stderr)  # only a whole, passed green record is 0
+                self.assertNotIn("Traceback", result.stderr)
+        for record in (whole, {**whole, "code": None}):
+            (folder / "gate.json").write_text(json.dumps(record))
+            self.assertEqual(self.p.team("result", "gate", "T-99").returncode, 0)
+        # one line whatever a field holds: every line break or control character comes out escaped
+        for record in ({**whole, "state": "red", "code": 1, "why": "first\nsecond\r\u2028third\x1b"},
+                       {**whole, "started": "s\nx", "ended": "e\n", "code": "1\n2"}):
+            with self.subTest(record=record):
+                (folder / "gate.json").write_text(json.dumps(record))
+                result = self.p.team("result", "gate", "T-99")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(len(result.stdout.splitlines()), 1, result.stdout)
+        (folder / "gate.json").write_text(json.dumps({**whole, "state": "red", "code": 1, "why": "first\nsecond"}))
+        self.assertIn("why: first\\nsecond", self.p.team("result", "gate", "T-99").stdout)
+        key = "gh" "p_" + "A1b2" * 9  # a full GitHub key shape, built in parts for the pack's leak scan
+        red = {**whole, "state": "red", "code": 1, "why": f"push failed: {key}"}
+        (folder / "gate.json").write_text(json.dumps(red))
+        shown = self.p.team("result", "gate", "T-99").stdout
+        self.assertNotIn(key, shown)
+        self.assertIn("***", shown)
 
     def test_green_on_the_branch_head_without_keys(self) -> None:
         result = self.gate('grep -q change file.txt && test -z "$ALPHA_KEY" && '
@@ -598,6 +660,30 @@ esac
 """
 
 
+def process_gone(pid: int) -> bool:
+    """True once the process has exited. A detached flow is an orphan: where its new parent never reaps (a
+    container whose pid 1 is `timeout` or the test runner, as on the team's gate) it stays a zombie, which
+    kill(pid, 0) still finds. A zombie runs no code and holds no files, so it counts as gone; the test reaps it when
+    it is the parent. Any other state, or no /proc to tell, counts as running."""
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return True
+    except ChildProcessError:
+        pass
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        # With a /proc (Linux) the process went away after kill(); without one (macOS) nothing tells.
+        return Path("/proc/self/stat").exists()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[-1].split()[:1] == ["Z"]
+
+
 class FlowTest(unittest.TestCase):
     """team flow end to end in host mode, with stand-in worker, bugfixer and review CLIs."""
 
@@ -806,10 +892,9 @@ class FlowTest(unittest.TestCase):
         self.assertTrue(status.stdout.startswith("ready wouf/T-40"))
         # The final state is written last, but the process may still be exiting: wait for it, so tearDown never races it.
         pid = json.loads((self.p.root / ".agents" / "team" / "flows" / "T-40" / "state.json").read_text())["pid"]
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+        exit_deadline = time.monotonic() + 30
+        while time.monotonic() < exit_deadline:
+            if process_gone(pid):
                 break
             time.sleep(0.1)
         else:
@@ -819,6 +904,7 @@ class FlowTest(unittest.TestCase):
         state = json.loads((self.p.root / ".agents" / "team" / "flows" / "T-40" / "state.json").read_text())
         return [(step["kind"], step["bot"]) for step in state["steps"]]
 
+    @unittest.skipIf(os.geteuid() == 0, "as root, file modes do not make a host run's inputs read-only (docs/DESIGN.md)")
     def test_a_plan_runs_scout_then_planner_and_ends_ready_with_the_plan(self) -> None:
         self.p.brief.write_text("Class: plan\nObjective: cut the goal into packages\n")
         result = self.start()

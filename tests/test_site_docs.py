@@ -8,6 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import writable_copy  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / 'scripts/build_site_docs.py'
 GENERATED = ('docs.html', 'changelog.html', 'contribute.html')
@@ -26,10 +29,10 @@ class DocsBuildTest(unittest.TestCase):
                               capture_output=True, text=True)
 
     def fixture(self, root):
-        shutil.copytree(ROOT / 'docs/guide', root / 'docs/guide')
+        writable_copy(ROOT / 'docs/guide', root / 'docs/guide')
         (root / 'site').mkdir()
-        shutil.copy(ROOT / 'site/index.html', root / 'site/index.html')
-        shutil.copy(ROOT / 'CHANGELOG.md', root / 'CHANGELOG.md')
+        writable_copy(ROOT / 'site/index.html', root / 'site/index.html')
+        writable_copy(ROOT / 'CHANGELOG.md', root / 'CHANGELOG.md')
 
     def test_checked_in_pages_are_current(self):
         result = self.run_build(check=True)

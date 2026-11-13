@@ -21,6 +21,9 @@ except ImportError:
     except ImportError:
         tomllib = None
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, writable_copy  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = ROOT / "catalog"
 SKILLS = sorted(p.parent for p in (CATALOG / "skills").glob("*/SKILL.md"))
@@ -58,6 +61,10 @@ def frontmatter(text: str) -> dict:
         elif key:
             fields[key] = (fields[key] + " " + line.strip()).strip()
     return fields
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class CatalogSkillsTest(unittest.TestCase):
@@ -212,8 +219,8 @@ class CatalogLauncherTest(unittest.TestCase):
         server = json.loads(block.group(1))["mcpServers"]["control"]
         with tempfile.TemporaryDirectory() as project:
             root = Path(project)
-            shutil.copytree(CATALOG / "tools" / "control-mcp", root / "control-mcp",
-                            ignore=shutil.ignore_patterns("__pycache__", "tests"))
+            writable_copy(CATALOG / "tools" / "control-mcp", root / "control-mcp",
+                          ignore=shutil.ignore_patterns("__pycache__", "tests"))
             subprocess.run([sys.executable, "-m", "venv", "--without-pip", "control-mcp/.venv"],
                            cwd=root, check=True, capture_output=True)
             shutil.copy(root / "control-mcp" / "control.example.toml", root / "control-mcp" / "control.toml")

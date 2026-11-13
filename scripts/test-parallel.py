@@ -24,15 +24,27 @@ def modules_in(directory, prefix=''):
             yield from modules_in(path, prefix + path.name + '.')
 
 
+def suite_env(tmp):
+    # A second line of defence (the tests clear WOUF_* themselves, tests/support.py wouf_env): no suite starts with
+    # the caller's WOUF_* variables (a bot sandbox's WOUF_LOG_DIR, say), so a test that forgets one still cannot
+    # write outside its own temporary folders.
+    # WOUF_TEST_TIME_FACTOR is the one knob kept: it only stretches the tests' waits on a busy host.
+    env = {k: v for k, v in os.environ.items() if not k.startswith('WOUF_') or k == 'WOUF_TEST_TIME_FACTOR'}
+    env['TMPDIR'] = tmp
+    env['PYTHONPATH'] = os.path.abspath('tests') + os.pathsep + env.get('PYTHONPATH', '')
+    return env
+
+
 def run_module(name):
     start = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='test-parallel-') as tmp:
-        env = os.environ.copy()
-        env['TMPDIR'] = tmp
-        env['PYTHONPATH'] = os.path.abspath('tests') + os.pathsep + env.get('PYTHONPATH', '')
+        env = suite_env(tmp)
         try:
-            result = subprocess.run([sys.executable, '-m', 'unittest', name], stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True, errors='replace', env=env)
+            # stdin=DEVNULL: no suite may wait on the caller's terminal or an open pipe (a fake engine that reads
+            # its input to the end would hang)
+            result = subprocess.run([sys.executable, '-m', 'unittest', name], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace',
+                                    env=env)
             output, code = result.stdout, result.returncode
         except OSError as exc:
             output, code = str(exc), 1

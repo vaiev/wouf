@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_federate import Team, helper_module  # noqa: E402
+from support import isolate_wouf_env  # noqa: E402
 
 
 def git(*args: str, cwd: Path | None = None, data: bytes | None = None) -> str:
@@ -25,6 +26,10 @@ def disable_maintenance(repo: Path) -> None:
     """Keep Git from starting detached maintenance jobs against repositories cleaned up by the test."""
     git("--git-dir", str(repo), "config", "gc.auto", "0")
     git("--git-dir", str(repo), "config", "maintenance.auto", "false")
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen") and shutil.which("git"), "needs ssh-keygen and git")

@@ -104,7 +104,8 @@ class GateCacheTest(unittest.TestCase):
                 fake = self.p.bin / engine
                 fake.write_text(f'#!{sys.executable}\nimport json, sys\n'
                                 f'with open({str(calls)!r}, "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n'
-                                'sys.stdin.buffer.read()\n')
+                                'if sys.argv[1] == "run":\n'
+                                '    sys.stdin.buffer.read()\n')
                 fake.chmod(0o755)
                 self.p.set('mode = host', 'mode = container')
                 self.p.set('engine = docker', f'engine = {engine}')

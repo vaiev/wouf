@@ -9,6 +9,11 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from test_log import helper, LOG
+from support import isolate_wouf_env  # noqa: E402
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class Knowledge(unittest.TestCase):

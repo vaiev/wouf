@@ -3,7 +3,6 @@ the commands run, result and _supervise."""
 
 from __future__ import annotations
 
-import inspect
 import math
 import shlex
 import threading
@@ -12,19 +11,20 @@ from datetime import timedelta
 
 from teamlib.core import *  # noqa: F401,F403
 from teamlib.engine import (NEEDS_RUNNER, READY, SETUP, box_command, box_ready, budget_caps, budget_mark, budget_skip,
-                            claude_project, claude_usage, cli_of, collect_lessons as engine_collect_lessons, connector,
-                            egress_end, egress_prepare, egress_report, egress_spec, engine_env, event_problem, over_run,
+                            cli_of, collect_lessons as engine_collect_lessons, connector, egress_end, egress_prepare,
+                            egress_report, egress_spec, engine_env, event_problem, over_run, refuse_out_input,
                             fetch_results, image_runners, image_tag, keep_others, labels, mcp_entry, mode, rejoin,
-                            others_lines, others_signal, others_step, pick_runner, recipe, send_box, sh, stamp_clear,
-                            stamp_of, tier_model, unknown, uses_login, volume, watch_stop, where)
+                            others_lines, others_signal, others_step, pick_runner, recipe, relative_repo, send_box, sh,
+                            stamp_clear, stamp_of, tier_model, unknown, uses_login, volume, watch_stop, where,
+                            login_link_steps, login_paths)
+from teamlib.usage import *  # noqa: F401,F403  (the run's numbers: the adapter line, out/usage.json, the receipt)
 
 # ---------------------------------------------------------------- events
-
 # The event store: teamlib.state, which plugs itself in when it is loaded (bin/team loads every module before a
 # command). A kernel module never imports a leaf; without it, nothing is written. Only the lead's side writes events;
 # nothing of the store enters a sandbox.
 STORE: list = []
-# The login (teamlib.login) plugs itself in the same way; stage_run calls its build.
+# The login (teamlib.login) plugs itself in the same way.
 LOGIN: list = []
 # Staged runs (teamlib.staged) plug in the same way: their result view, and the flow's stop after a staged work step.
 STAGED: list = []
@@ -126,56 +126,6 @@ def ask(member: str, task: str, text: str) -> None:
         return [("question.asked", member, task, {"id": qid, "text": text, "from": member})]
     record([], prepare)
 
-# ---------------------------------------------------------------- usage
-
-# A run's token numbers: an adapter, chosen by the runner's CLI, reads the CLI's own session record in the bot's
-# storage inside the container and prints one line of numbers. A runner without an adapter, a host run: unknown.
-USAGE_MARK = "wouf-usage "
-TOKENS = re.compile(r"[0-9]{1,12}/[0-9]{1,12}/[0-9]{1,12}/[0-9]{1,12}")
-USAGE_LINE = re.compile(r"wouf-usage tokens=(" + TOKENS.pattern + r"|unknown) skipped=([0-9]{1,9})")
-USAGE_SINCE = "/tmp/wouf-usage-since"
-
-USAGE_ADAPTERS = {"claude": claude_usage}
-
-def usage_adapter(cli: str | None) -> str | None:
-    """The adapter for a runner's CLI (its program name), or None: that runner reports unknown."""
-    name = Path(cli).name if cli else ""
-    return name if name in USAGE_ADAPTERS else None
-
-def usage_step(adapter: str, work: str) -> str:
-    """The run script's line that prints the run's numbers, unknown when the adapter fails or runs over 60 s."""
-    program = inspect.getsource(USAGE_ADAPTERS[adapter]) + (
-        "\nimport sys\nsys.stdout.write(%s(*sys.argv[1:4]) + '\\n')\n" % USAGE_ADAPTERS[adapter].__name__)
-    project = claude_project(work)
-    return (f"printf '{USAGE_MARK}%s\\n' \"$(timeout 60 python3 -I -c {shlex.quote(program)} "
-            f"\"$HOME\" \"$USAGE_SINCE\" {shlex.quote(project)} 2>/dev/null || echo 'tokens=unknown skipped=0')\"")
-
-def run_steps_usage(adapter: str | None, work: str) -> tuple[list[str], list[str]]:
-    """The script's steps before the bot starts (the time mark) and after it ended (the numbers)."""
-    if not adapter:
-        return [], []
-    return [f"USAGE_SINCE={USAGE_SINCE}", "touch \"$USAGE_SINCE\""], [usage_step(adapter, work)]
-
-def usage_of(lines: list[str], adapter: str | None) -> tuple[str, int]:
-    """The numbers of a run from its collected, masked output: the last usage line, which the script prints after the
-    bot ended. Digits only, each below 10^12; anything else, or a run without an adapter, is unknown."""
-    if not adapter:
-        return "unknown", 0
-    for line in reversed(lines):
-        if line.startswith(USAGE_MARK.strip()):
-            found = USAGE_LINE.fullmatch(line)
-            return (found.group(1), int(found.group(2))) if found else ("unknown", 0)
-    return "unknown", 0
-
-def receipt(task: str, outcome: str, signal: str, tokens: str) -> None:
-    """The lead's receipt of a run's end, as lead_log, with the run's numbers as its cost."""
-    cost = f"tokens={tokens if TOKENS.fullmatch(tokens) else 'unknown'}"
-    done = subprocess.run([sys.executable, str(PACK / "bin" / "log"), "add", "lead", task, outcome,
-                           mask_secrets(signal, KNOWN)[:120], "--cost", cost], capture_output=True, text=True,
-                          env={**os.environ, "WOUF_LOG_DIR": str(team_dir() / "logs"), "WOUF_MASK": json.dumps(KNOWN)})
-    if done.returncode:
-        say(f"team: receipt not written: {done.stderr.strip()[:200]}", err=True)
-
 # ---------------------------------------------------------------- run
 
 def staged_team_skills(task_stage: Path) -> list:
@@ -233,12 +183,12 @@ def commits(decl: dict) -> bool:
     return decl.get("role", decl.get("id")) not in ("review", "decide") and decl.get("commits", "yes") != "no"
 
 def stage_of(member: str, task: str) -> Path:
-    return env_dir() / member / "tasks" / task
+    return env_dir() / member / task if member == "gate" else env_dir() / member / "tasks" / task
 
 def logged_tasks() -> list[str]:
     """Task ids in the team's logs and in the logs bots brought back: a run may leave a receipt before any folder."""
     names = []
-    for path in [*(team_dir() / "logs").glob("*.jsonl"), *env_dir().glob("*/logs/*.jsonl")]:
+    for path in [*log_dir().glob("*.jsonl"), *env_dir().glob("*/logs/*.jsonl")]:
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
@@ -287,7 +237,6 @@ def merge_text(text: str, dst: Path, values=()) -> None:
     if new:
         put(dst, "\n".join(new) + "\n", "a")
 
-
 def mask_log(path: Path, values=()) -> None:
     """Mask the keys in a receipt file a bot wrote in place (host mode: it writes the team's copy itself)."""
     if path.is_symlink() or not path.is_file():
@@ -297,15 +246,12 @@ def mask_log(path: Path, values=()) -> None:
     if masked != text:
         put(path, masked)
 
-
 KEY_OPEN, KEY_CLOSE = re.compile(KEY_BEGIN), re.compile(KEY_END)
 HOLD_LINES = 400
-
 
 def open_value(text: str, values) -> bool:
     """Whether text ends with the start of a registered value that spans lines: the rest of it is still to come."""
     return any(text.endswith(value[:n]) for value in values if "\n" in value for n in range(1, len(value)))
-
 
 def mask_stream(stream, handle, values=()) -> None:
     """Copy process output with keys masked, holding private-key blocks until END.
@@ -322,7 +268,6 @@ def mask_stream(stream, handle, values=()) -> None:
         sink(handle, "".join(held), values)
         handle.flush()
         held.clear()
-
     try:
         for raw in stream:
             line = raw.decode("utf-8", errors="replace")
@@ -357,13 +302,11 @@ def mask_stream(stream, handle, values=()) -> None:
         # The log was closed under a process that outlived its run: what is left is not read.
         pass
 
-
 def masked_lines(path: Path) -> list[str]:
     """A run's or the gate's output as lines, with keys masked once more before anyone reads them."""
     if not path.is_file():
         return []
     return mask_secrets(path.read_text(encoding="utf-8", errors="replace")).splitlines()
-
 
 def check_ref_conflict(branch: str, at: Path | str | None = None) -> None:
     """A ref that is a path prefix of the branch (atlas blocks atlas/T-1) or lies below it cannot coexist
@@ -378,7 +321,6 @@ def check_ref_conflict(branch: str, at: Path | str | None = None) -> None:
             die(f"branch {name} is below the result branch {branch} (a ref cannot be a path prefix of another); "
                 f"rename or delete {name} in the repository, then run again")
 
-
 def check_branch(branch: str, base_ref: str, at: Path | None = None, shown_repo: str = "") -> None:
     """Before any token is spent: the bot's commits must be able to reach its branch."""
     check_ref_conflict(branch, at)
@@ -390,7 +332,6 @@ def check_branch(branch: str, base_ref: str, at: Path | None = None, shown_repo:
         if not start or git("merge-base", "--is-ancestor", branch, start, check=False, at=at).returncode:
             die(f"branch {branch} exists; continue it with --repo {shown_repo}{branch}, or use a new task id")
 
-
 def bundle_commit(at: Path | str | None, path: Path, commit: str, name: str) -> str:
     """A bundle of one commit (git bundles need a ref) under a temporary ref, removed again; returns that ref."""
     ref = f"refs/wouf/{name}"
@@ -401,9 +342,7 @@ def bundle_commit(at: Path | str | None, path: Path, commit: str, name: str) -> 
         git("update-ref", "-d", ref, check=False, at=at)
     return ref
 
-
 PATH_START = ("/", "./", "../", "~")
-
 
 def split_repo(value: str | None) -> tuple[Path | None, str | None]:
     """--repo REF names a commit of this folder; --repo PATH[@REF] another repository (a ref never starts
@@ -414,7 +353,6 @@ def split_repo(value: str | None) -> tuple[Path | None, str | None]:
     if not sep or not path:
         path, ref = value, ""
     return Path(path).expanduser().resolve(), ref or "HEAD"
-
 
 def parse_run(args: list[str]) -> dict:
     opts = {"--brief": None, "--tier": None, "--runner": None, "--effort": None, "--model": None, "--egress": None}
@@ -440,12 +378,11 @@ def parse_run(args: list[str]) -> dict:
     if len(positional) != 2:
         die("usage: team run ID TASK --brief FILE [--tier light|mid|strong] [--runner NAME] [--model NAME] "
             "[--effort LEVEL] [--input PATH]... [--egress HOSTS] "
-            "[--repo [REF | PATH[@REF]]] [--detach] [--dry-run | --staged]")
+            "[--repo [REF | PATH[@REF]]] (a relative PATH from this folder) [--detach] [--dry-run | --staged]")
     if dry and staged:
         die("--staged with --dry-run: a dry run never starts a bot, so there is nothing to stage")
     return {"member": positional[0], "task": positional[1], "inputs": inputs, "dry": dry, "repo": repo,
             "detach": detach, "staged": staged, **opts}
-
 
 def take_lock(stage: Path, name: str, member: str, task: str) -> Path:
     """One run per bot and task. The lock holds the pid of whoever runs it; a lock of a dead pid is stale."""
@@ -466,10 +403,8 @@ def take_lock(stage: Path, name: str, member: str, task: str) -> Path:
     die(f"could not take the lock {lock}")
     return lock
 
-
 def release(stage: Path) -> None:
     (stage / "run.lock").unlink(missing_ok=True)
-
 
 def sandbox():
     """teamlib.bwrap, which bin/team loads before any command."""
@@ -477,12 +412,11 @@ def sandbox():
         die("mode = bwrap needs teamlib.bwrap, which bin/team loads; run it through .agents/bin/team")
     return BOX[0]
 
-
 def prepare(ini, o: dict):
     """Everything that can fail fast happens here, before a token is spent. Returns (spec, secrets) or None."""
     member, task = o["member"], o["task"]
     reserved(member)
-    repo_dir, repo = split_repo(o["repo"])
+    repo_dir, repo = split_repo(relative_repo(o["repo"], PATH_START))
     decl, caps, current, (runner, section, command) = prepare_bot(ini, o)
     tier, model, effort, (connectors, auth, needed, found) = prepare_model(ini, o, decl, runner, section)
     stage, committing = stage_of(member, task), commits(decl)
@@ -496,8 +430,10 @@ def prepare(ini, o: dict):
     if o["dry"]:
         say(dumps(plan))
         return None
+    egress = egress_prepare(ini, o, decl, current, runner)  # network = egress: its lists before any engine call
     commit = prepare_checks(ini, o, repo_dir, repo, current == "container", connectors)
-    egress = egress_prepare(ini, o, decl, current, runner)  # network = egress: the allowlist and the engine, checked
+    adapter, usage_command = usage_config(ini, section, cli_of(ini, runner), current in BOXED)  # before the lock
+    links = login_link_steps(login_paths(ini, runner)) if current in BOXED else ([], [])  # checked before the lock
     branch = f"{slug(lead)}/{task}" if repo and committing else None
     if branch:
         check_branch(branch, repo, repo_dir, f"{repo_dir}@" if repo_dir else "")
@@ -506,19 +442,17 @@ def prepare(ini, o: dict):
     if skipped:
         release(stage)
         raise SystemExit(report(*skipped))
-    # The usage adapter is chosen by the runner's CLI; only a boxed run reads the bot's own storage.
-    adapter = usage_adapter(cli_of(ini, runner)) if current in BOXED else None
     v = {"member": member, "task": task, "repo": repo, "stage": stage, "current": current, "section": section,
          "connectors": connectors, "work": work, "name": name, "lead": lead, "role": role, "runner": runner,
          "tier": tier, "model": model, "brief": brief, "argv": argv, "cname": cname, "branch": branch, "egress": egress,
          "readonly": not committing, "repo_dir": repo_dir, "effort": effort, "commit": commit, "auth": auth,
-         "needed": needed, "found": found, "usage": adapter, "per_run": caps.get("per_run"), "staged": o["staged"]}
+         "needed": needed, "found": found, "usage": adapter, "per_run": caps.get("per_run"), "staged": o["staged"],
+         "usage_command": usage_command, "links": links}
     try:
         return stage_run(ini, o, v)
     except BaseException:
         release(stage)
         raise
-
 
 def prepare_bot(ini, o: dict) -> tuple[dict, dict, str, tuple[str, str, str]]:
     """The bot's declaration, the task id, the budget caps, the brief file, the mode, the runner, section, command."""
@@ -548,7 +482,6 @@ def prepare_bot(ini, o: dict) -> tuple[dict, dict, str, tuple[str, str, str]]:
         die(f"[{section}] has no command; fill it in in team/config.ini")
     return decl, caps, current, (runner, section, command)
 
-
 def prepare_model(ini, o: dict, decl: dict, runner: str, section: str) -> tuple[str, str, str, tuple]:
     """The tier, model and effort, checked; the connectors and stored values this run may pass on, as sinks."""
     tier = o["--tier"] or decl.get("tier") or get(ini, "tiers", o["member"], "strong") or "strong"
@@ -566,7 +499,6 @@ def prepare_model(ini, o: dict, decl: dict, runner: str, section: str) -> tuple[
     found = stored(auth + needed)
     register(found.values())
     return tier, model, effort, (connectors, auth, needed, found)
-
 
 def prepare_prompt(ini, o: dict, decl: dict, current: str, stage: Path, connectors: list, repo: str | None,
                    committing: bool) -> tuple[str, str, tuple]:
@@ -592,7 +524,6 @@ def prepare_prompt(ini, o: dict, decl: dict, current: str, stage: Path, connecto
               f"`{name} · {task} ·`; it is all {lead} reads.\n\n--- BRIEF {task} ---\n{brief}\n--- END BRIEF ---")
     return work, prompt, (name, lead, role, brief)
 
-
 def prepare_argv(ini, section: str, command: str, prompt: str, work: str, model: str, effort: str,
                  connectors: list) -> tuple[list[str], str]:
     """The agent CLI's command line; an effort the runner cannot pass is left out (returned empty)."""
@@ -608,7 +539,6 @@ def prepare_argv(ini, section: str, command: str, prompt: str, work: str, model:
         argv += [p.replace("{mcp}", f"{work}/in/mcp.json") for p in shlex.split(get(ini, section, "mcp_arg"))]
     return argv, effort
 
-
 def prepare_image(ini, o: dict, runner: str) -> list | None:
     """The runners the team image holds (None: auto); outside a dry run the runner must be one of them."""
     runners, warnings = image_runners(ini)
@@ -622,12 +552,12 @@ def prepare_image(ini, o: dict, runner: str) -> list | None:
             f"(it is installed with the next run)")
     return in_image
 
-
 def prepare_checks(ini, o: dict, repo_dir: Path | None, repo: str | None, container: bool, connectors: list) -> str:
     """The inputs and --repo exist, the engine answers, the staging tree is clear; returns the commit or ""."""
     for item in o["inputs"]:
         if not Path(item).exists():
             die(f"input {item} not found")
+        refuse_out_input(item, stage_of(o["member"], o["task"]) / "out", o["task"])
     if repo_dir is not None:
         if not repo_dir.is_dir():
             die(f"--repo {repo_dir}: no such folder")
@@ -645,7 +575,6 @@ def prepare_checks(ini, o: dict, repo_dir: Path | None, repo: str | None, contai
     check_inputs(o["inputs"], repo, connectors)
     return commit
 
-
 def check_inputs(inputs: list, repo: str, connectors: list) -> None:
     """The whole staging tree, checked before the stage is cleaned, locked or written: two different sources whose
     names mask alike (a secret-shaped name in two folders is two payloads, not one), an input named as one of the
@@ -662,7 +591,6 @@ def check_inputs(inputs: list, repo: str, connectors: list) -> None:
             die(f"refusing the inputs: {COLLISION}")
         if source.is_dir():
             plan_tree(source, True, "an input")
-
 
 def stage_run(ini, o: dict, v: dict):
     """Second half of prepare, under the lock: stage the inputs, read the keys, write the script and run.json."""
@@ -693,15 +621,13 @@ def stage_run(ini, o: dict, v: dict):
         servers = {c["name"]: mcp_entry(c["server"], fmt) for c in connectors}
         put(stage / "in" / "mcp.json", dumps({"mcpServers": servers}, indent=2))
         if not get(ini, section, "mcp_arg") and not get(ini, section, "mcp_path"):
-            say(f"team: [{section}] has no mcp_arg or mcp_path; the connectors are not wired for this CLI",
-                err=True)
+            say(f"team: [{section}] has no mcp_arg or mcp_path; the connectors are not wired for this CLI", err=True)
     # auth names are alternatives (the first stored one is passed); connector secrets are all needed.
     auth, needed, found = v["auth"], v["needed"], v["found"]
     chosen = next((n for n in auth if n in found), None)
     secrets = {k: found[k] for k in ([chosen] if chosen else []) + needed if k in found and ENV_NAME.match(k)}
     for key in [k for k, val in secrets.items() if "\n" in val or "\r" in val]:
-        say(f"team: the stored value of {key} has a line break; store it again with .agents/bin/secret set {key}",
-            err=True)
+        say(f"team: the stored value of {key} has a line break; store it again with .agents/bin/secret set {key}", err=True)
         del secrets[key]
     missing = ([] if chosen or not auth else [" or ".join(auth)]) + [n for n in needed if n not in found]
     if missing:
@@ -722,9 +648,10 @@ def stage_run(ini, o: dict, v: dict):
     ]
     if current in BOXED:
         steps += ["export HOME=/bot/home WOUF_LOG_DIR=/bot/logs WOUF_KNOWLEDGE_DB=/wouf/knowledge.sqlite", "mkdir -p \"$HOME\" /bot/logs",
-                  "rm -rf \"$T/in\" \"$T/out\"", "mkdir -p \"$T/out\"", "cp -R /inbox \"$T/in\""]
+                  "rm -rf \"$T/in\" \"$T/out\"", "mkdir -p \"$T/out\"", "cp -R /inbox \"$T/in\"", *v["links"][0]]
     steps.append("cd \"$T\"")
-    steps += run_steps_usage(v["usage"], work)[0]
+    usage_before, usage_after = run_steps_usage(v["usage"], work, v["usage_command"])
+    steps += usage_before
     if connectors and mcp_path:
         steps.append(f"mkdir -p \"$(dirname {shlex.quote(mcp_path)})\" && cp in/mcp.json {shlex.quote(mcp_path)}")
     if repo:
@@ -744,7 +671,8 @@ def stage_run(ini, o: dict, v: dict):
     steps += ["set +e", "\"$@\" </dev/null &", "p=$!", "trap 'kill -TERM \"$p\" 2>/dev/null' TERM",
               "( trap 'kill \"$s\" 2>/dev/null; exit 0' TERM; sleep \"$LIMIT\" & s=$!; wait \"$s\"; : > \"$MARK\"; "
               "kill -TERM \"$p\" 2>/dev/null; sleep 10 & s=$!; wait \"$s\"; kill -KILL \"$p\" 2>/dev/null ) >/dev/null 2>&1 &",
-              "w=$!", "wait \"$p\"; code=$?", "kill \"$w\" 2>/dev/null", "[ -e \"$MARK\" ] && code=124"]
+              "w=$!", "wait \"$p\"; code=$?", "kill \"$w\" 2>/dev/null", "[ -e \"$MARK\" ] && code=124",
+              *v["links"][1]]  # the login paths: a file the CLI wrote in place of its link goes to the login storage
     if v["readonly"]:
         steps.append(f"chmod -R u+w {frozen} 2>/dev/null || true")
     if v["branch"]:
@@ -754,10 +682,9 @@ def stage_run(ini, o: dict, v: dict):
         steps.append(f"(cd repo && git bundle create \"$T/out/result.bundle\" refs/wouf/start..task/{task} >/dev/null 2>&1) || true")
         steps.append(others_step(task))  # commits outside the task branch come back too
     if current in BOXED:
-        steps += ["cp -R \"$T/out\" /outbox/out", "cp -R /bot/logs /outbox/logs"]
-    steps += run_steps_usage(v["usage"], work)[1]  # the run's numbers, the last line of its output
+        steps += [*usage_command_steps(v["usage_command"]), "cp -R \"$T/out\" /outbox/out", "cp -R /bot/logs /outbox/logs"]
+    steps += usage_after  # the run's numbers, the last line of its output
     steps.append("exit $code")
-
     spec = {"mode": current, "member": member, "task": task, "name": name, "lead": lead, "role": v["role"],
             "runner": v["runner"], "tier": v["tier"], "model": v["model"] or "default",
             "effort": v["effort"] or "default", "stage": str(stage),
@@ -787,7 +714,6 @@ def stage_run(ini, o: dict, v: dict):
     lead_log(task, "started", f"{member} via {v['runner']} {v['tier']} {v['model'] or 'default'}{effort} ({current})")
     record([run_event(spec, "run.started", "started", v["commit"] or None)])
     return spec, secrets
-
 
 def run(ini, args: list[str]) -> int:
     o = parse_run(args)
@@ -831,11 +757,9 @@ def run(ini, args: list[str]) -> int:
             return 1
         time.sleep(0.5)
 
-
 LAUNCH = "import subprocess, sys; subprocess.Popen(sys.argv[1:], start_new_session=True)"
 # What LAUNCH starts: bin/team itself by its absolute path (the one next to teamlib/), never a module file.
 TEAM = Path(__file__).resolve().parent.parent / "team"
-
 
 def supervise(member: str, task: str) -> int:
     stage = stage_of(member, task)
@@ -871,7 +795,6 @@ def supervise(member: str, task: str) -> int:
         raise
     return 0
 
-
 def execute(spec: dict, secrets: dict):
     """Start the bot and stream its masked output into output.log. Returns (exit code, timed out)."""
     stage = Path(spec["stage"])
@@ -896,7 +819,6 @@ def execute(spec: dict, secrets: dict):
         if fresh or failed[-1] not in ("image", "storage"):
             die(f"{spec['where']['engine']} {failed[-1]} failed: {SETUP.sub('', problem).strip()[-400:]}")
     return code, timed_out
-
 
 def attach(spec: dict, stdin_text: str, masks: list) -> tuple[int, bool, str]:
     """Run the bot (a container through one pipeline where the engine is, or the script here), feed its stdin and
@@ -935,7 +857,6 @@ def attach(spec: dict, stdin_text: str, masks: list) -> tuple[int, bool, str]:
                 os.killpg(proc.pid, 9)
             except (ProcessLookupError, PermissionError):
                 proc.kill()
-
     # Backstop only: the script keeps the limit itself.
     timer = threading.Timer(spec["limit"] + 60, on_timeout)
     timer.start()
@@ -944,9 +865,7 @@ def attach(spec: dict, stdin_text: str, masks: list) -> tuple[int, bool, str]:
     def read() -> None:
         with (stage / "output.log").open("w", encoding="utf-8") as handle:
             mask_stream(proc.stdout, handle, masks)
-
     ready = threading.Event()
-
     def errors_of() -> None:
         # The pipeline's own lines; wouf-ready says the container waits for go.
         for line in proc.stderr:
@@ -955,7 +874,6 @@ def attach(spec: dict, stdin_text: str, masks: list) -> tuple[int, bool, str]:
                 ready.set()
             else:
                 problem.append(text)
-
     helpers = [threading.Thread(target=read, daemon=True),
                threading.Thread(target=send_box, args=(proc, stdin_text, stage, pack, bool(spec.get("repo")), ready),
                                 daemon=True)]
@@ -977,11 +895,9 @@ def attach(spec: dict, stdin_text: str, masks: list) -> tuple[int, bool, str]:
     code = rejoin(spec, code, lambda *a: mask_stream(*a, masks)) if kill and ready.is_set() and code == 255 else code
     return code, timed_out.is_set() or code == 124, mask_secrets("".join(problem), [*KNOWN, *masks])
 
-
 def collect_lessons(spec: dict, masks=(), skipped=()) -> None:
     """Collect lessons using the run's shared event store and sanitization."""
     engine_collect_lessons(spec, STORE, record, bot_text, masks, skipped)
-
 
 def collect(spec: dict, code: int, timed_out: bool, masks=()) -> dict:
     """Bring results, logs and commits back, write result.json and the receipt, release the lock. The bot's
@@ -1030,9 +946,8 @@ def collect(spec: dict, code: int, timed_out: bool, masks=()) -> dict:
         state = "stopped"
     output = stage / "output.log"
     lines = output.read_text(encoding="utf-8", errors="replace").splitlines() if output.is_file() else []
-    tokens, unread = usage_of(lines, spec.get("usage"))
+    tokens, unread, numbers, lines = run_numbers(stage, lines, spec)  # usage.json > the adapter line > unknown
     over = over_run(spec, tokens)  # marked only: a CLI cannot be stopped cleanly mid-run
-    lines = [line for line in lines if not line.startswith(USAGE_MARK.strip())]
     until = None
     if state != "stopped" and (state != "done" or return_block(lines, name, task) is None):
         hit, until = limit_hit(lines, datetime.now(timezone.utc), spec.get("limit_patterns") or LIMIT_PATTERNS)
@@ -1052,7 +967,7 @@ def collect(spec: dict, code: int, timed_out: bool, masks=()) -> dict:
     result = {**read_json(stage / "result.json"), "state": state, "code": 124 if timed_out else code,
               "ended": now(), "branch": branch, "error": error, "skipped": skipped,
               "binary": [*spec.get("binary_inputs", []), *("out/" + b for b in binary)], "until": until, "wip": wip,
-              "tokens": tokens, "usage_skipped": unread, "over_budget": over, "staged": staged, **others}
+              "tokens": tokens, "usage_skipped": unread, **numbers, "over_budget": over, "staged": staged, **others}
     write_json(stage / "result.json", result)
     # Released as soon as the result is written: a caller that sees it may start the next run at once, and the
     # receipt below runs a subprocess.
@@ -1070,17 +985,14 @@ def collect(spec: dict, code: int, timed_out: bool, masks=()) -> dict:
     receipt(task, outcome, budget_mark(signal, over), tokens)
     return result
 
-
 def span(seconds: int) -> str:
     return f"{seconds // 60} min" if seconds >= 60 else f"{seconds} s"
-
 
 def shown(path: Path) -> str:
     try:
         return str(path.relative_to(PROJECT))
     except ValueError:
         return str(path)
-
 
 def report(spec: dict, result: dict) -> int:
     """Print the bot's return block, framed as data, and where its results are."""
@@ -1136,8 +1048,7 @@ def report(spec: dict, result: dict) -> int:
         say(f"team: {name} was stopped (team bot stop); what it did is in {shown(stage / 'out')}", err=True)
         return 1
     if result.get("state") == "timeout":
-        say(f"team: {name} ran longer than its time limit ({span(spec['limit'])}) and was stopped",
-            err=True)
+        say(f"team: {name} ran longer than its time limit ({span(spec['limit'])}) and was stopped", err=True)
         return 124
     if code:
         say(f"team: {name} exited {code}; full output in {output}", err=True)
@@ -1146,8 +1057,7 @@ def report(spec: dict, result: dict) -> int:
 
 
 def cmd_result(args: list[str]) -> int:
-    wait, positional = 0.0, []
-    it = iter(args)
+    wait, positional, it = 0.0, [], iter(args)
     for arg in it:
         if arg == "--wait":
             try:
@@ -1164,7 +1074,8 @@ def cmd_result(args: list[str]) -> int:
     reserved(member)
     stage = stage_of(member, task)
     if not (stage / "result.json").is_file():
-        die(f"no run of {task} for {member}")
+        return (gate_result(stage) if member == "gate" and (stage / "gate.json").is_file()
+                else die(f"no run of {task} for {member}"))
     spec = read_json(stage / "run.json")
     deadline = time.monotonic() + wait
     while True:
@@ -1181,7 +1092,6 @@ def cmd_result(args: list[str]) -> int:
             return 3
         time.sleep(1)
 
-
 # ---------------------------------------------------------------- usage limits
 
 # Default signs of a usage limit at the end of a run's output; a runner can name its own (limit_patterns).
@@ -1193,7 +1103,6 @@ RELATIVE = re.compile(r"(?:try again|retry|resets?) in ((?:\s*(?:and\s*)?\d+\s*(
                       r"seconds?|secs?|s)(?![a-z]),?)+)", re.I)
 ISO = re.compile(r"\b(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?)")
 EPOCH = re.compile(r"\|(\d{10})\b")
-
 
 def reset_time(text: str, at: datetime) -> datetime | None:
     """The reset time a limit message names, as an aware UTC time; None when it names none."""
@@ -1230,7 +1139,6 @@ def reset_time(text: str, at: datetime) -> datetime | None:
         return stamp.astimezone(timezone.utc)
     return None
 
-
 def limit_hit(lines: list[str], at: datetime, patterns: str) -> tuple[bool, str | None]:
     """Whether the last lines of a run's output report a usage limit, and until when (ISO, UTC)."""
     sign = re.compile(patterns, re.I)
@@ -1244,12 +1152,10 @@ def limit_hit(lines: list[str], at: datetime, patterns: str) -> tuple[bool, str 
             return True, stamp.isoformat(timespec="seconds")
     return True, None
 
-
 def return_block(lines: list[str], name: str, task: str) -> int | None:
     """Index of the last line that starts the bot's signed return block."""
     sign = re.compile(r"^\W*" + re.escape(f"{name} · {task} · "))
     return next((i for i in range(len(lines) - 1, -1, -1) if sign.match(lines[i])), None)
-
 
 def thaw(folder: Path) -> None:
     """Give the owner the write bit back under folder (a read-only run leaves its inputs so), so the folder can be
@@ -1259,7 +1165,6 @@ def thaw(folder: Path) -> None:
     for path in [folder, *(Path(root, name) for root, names, files in os.walk(folder) for name in [*names, *files])]:
         if not path.is_symlink():
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
-
 
 def remove_tree(path: Path) -> None:
     """Remove what a gate run may have left at path: a link is removed, never followed, and folders the run made
@@ -1276,17 +1181,14 @@ def remove_tree(path: Path) -> None:
                 os.chmod(os.path.join(root, name), 0o700)
     shutil.rmtree(path)
 
-
 # ---------------------------------------------------------------- commands
 
 def do_run(rest: list[str]) -> int:
     return run(config(), rest)
 
-
 def do_result(rest: list[str]) -> int:
     config()
     return cmd_result(rest)
-
 
 def do_supervise(rest: list[str]) -> int:
     """The supervisor LAUNCH starts as `bin/team _supervise MEMBER TASK`; it reads the config only to refuse."""
@@ -1294,6 +1196,5 @@ def do_supervise(rest: list[str]) -> int:
         config()
         unknown(["_supervise", *rest])
     return supervise(*rest)
-
 
 COMMANDS = {"run": do_run, "result": do_result, "_supervise": do_supervise}

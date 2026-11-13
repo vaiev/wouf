@@ -23,7 +23,7 @@ With `egress`:
 - An allowed host can still carry data out, for example a package registry that takes uploads. For encrypted connections the proxy sees only the host name, not what is sent.
 - Keys still reach the bot as with `bridge`; there is no key proxy yet. The CLI's model API and login hosts must be open.
 - The default host lists for each CLI are unverified until you try them: run the CLI once, read the refused hosts in `egress.log`, and set the lists to what it really needs.
-- The proxy refuses private and loopback addresses, so it cannot reach a model server on your own computer or in a private network.
+- The proxy refuses private and loopback addresses. The one exception is `[egress] private = host:port`: exactly the listed loopback or private pairs (a literal address or the container host alias, one port each) pass, for a model server on your own computer; every other private address stays refused, the default is empty, and `team run` says the pairs at start. A whole private network is never reachable.
 - In container mode it needs Podman with aardvark-dns 1.11.0 or newer, or a Docker version with the fix for a known name-resolution leak; older ones are refused.
 
 ## Secret masking has gaps
@@ -45,6 +45,10 @@ Bot output reaches the lead framed as data, not instructions. The lead is still 
 
 The container flow is tested with Docker and a stand-in agent CLI. The tests that need a real container engine or a working bubblewrap are skipped on a computer without them, so a green run there proves less. The commands for the real agent CLIs and the example connectors follow their documentation; check them against your versions.
 
-## Version 0.1.0
+## Version 0.2.0
 
-Version 0.1.0, dated 2026-11-06, is the first release. This guide describes `main`; the changelog says what 0.1.0 contains.
+Version 0.2.0, dated 2026-11-12, is the latest release; 0.1.0, dated 2026-11-06, was the first. This guide describes `main`; the changelog says what each contains.
+
+### Change receipts
+
+A receipt verifies the team's signed record and local commit binding, not correctness, honest review, or membership on a repository's main branch. Trust the signer and compare its fingerprint with a second copy, for example the release note of the tag; there is no witness or transparency log, and receipts can be withheld. Token, gate and egress evidence depends on the team and sandbox, and private hosts can relay. Signature time uses the signer's clock; CLI vendor is inferred from its name.

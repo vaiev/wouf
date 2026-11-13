@@ -4,10 +4,11 @@
 
 | Version | Supported |
 |---|---|
-| 0.1.x | Yes |
+| 0.2.x | Yes |
+| 0.1.x | No: no fixes; update to 0.2.x with `team update` |
 | Older `main` commits | No |
 
-Version 0.1.0, dated 2026-11-06, is the first release (`.agents/VERSION`, `CHANGELOG.md`). A fix comes as a new 0.1.x release, which `team update` installs.
+Version 0.2.0, dated 2026-11-12, is the latest release (`.agents/VERSION`, `CHANGELOG.md`). Only the latest line gets fixes: a fix comes as a new 0.2.x release, which `team update` installs. 0.1.x gets none.
 
 ## Reporting a vulnerability
 

@@ -23,6 +23,8 @@ from test_team_cli import SOURCE, Project
 
 sys.path.insert(0, str(SOURCE / "bin"))
 from teamlib import classify, state  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
 
 # A fabricated GitHub fine-grained token built from parts; it works nowhere.
 FAKE_KEY = "github_" "pat_" + "Zx9Kq2Lm7Pw4Rt6Vb8Ny3H" + "_" + "Qw8Er5Ty2Ui7Op4As9Df1Gh6Jk3Lz0Xc5Vb8Nm2Qw7Er4Ty1Ui9Op6As3Df"
@@ -40,7 +42,8 @@ FILES = [
 SYMBOLS = {"parse_route": ["src/api/routes.py"], "render_invoice": ["src/billing/invoice.py"],
            "glob_regex": [".agents/bin/teamlib/core.py"]}
 
-# Twenty goals with the class and paths a lead would write for them.
+# Twenty goals with the class and paths a lead would write for them; never a class with fewer reviews than
+# bin/project's former rule gives (design, compare, a goal without paths or over three areas: standard).
 FIXTURES = [
     ("Fix the typo in README", "mechanical", ["README.md"]),
     ("Rename `parse_route` to match_route in src/api/routes.py", "mechanical", ["src/api/routes.py"]),
@@ -52,12 +55,12 @@ FIXTURES = [
     ("Implement a retry for `render_invoice` with tests", "complex", ["src/billing/invoice.py"]),
     ("Refactor the overlap check in batch.py and add tests", "security",
      [".agents/bin/teamlib/batch.py", "tests/test_batch.py"]),
-    ("Design the billing module: invoices, payments and refunds", "plan", []),
+    ("Design the billing module: invoices, payments and refunds", "standard", []),
     ("Decide whether we keep the Makefile or move to scripts/", "decision", ["Makefile", "scripts/**"]),
     ("Investigate why the routes in src/api are slow", "analysis", ["src/api/**"]),
-    ("Compare docs/usage.md with docs/DESIGN.md and report the gaps", "analysis", ["docs/DESIGN.md", "docs/usage.md"]),
-    ("Add rate limiting to every endpoint", "plan", []),
-    ("Update src/api/routes.py, src/ui/app.ts and docs/usage.md for the new endpoint", "plan",
+    ("Compare docs/usage.md with docs/DESIGN.md and report the gaps", "standard", ["docs/DESIGN.md", "docs/usage.md"]),
+    ("Add rate limiting to every endpoint", "standard", []),
+    ("Update src/api/routes.py, src/ui/app.ts and docs/usage.md for the new endpoint", "standard",
      ["docs/usage.md", "src/api/routes.py", "src/ui/app.ts"]),
     ("Bump the version in the Makefile", "mechanical", ["Makefile"]),
     ("Make the release script scripts/release.sh stop on the first error", "standard", ["scripts/release.sh"]),
@@ -74,6 +77,10 @@ def score() -> tuple[int, list]:
         if (found["class"], found["paths"]) != (klass, paths):
             misses.append((text, found["class"], found["paths"]))
     return len(FIXTURES) - len(misses), misses
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class ClassifierTest(unittest.TestCase):
@@ -112,8 +119,9 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(rules["security_globs"], ["src/billing/**"])
         found = classify.classify("Polish src/billing/invoice.py", FILES, rules=rules)
         self.assertEqual((found["class"], found["security"]), ("security", ["src/billing/invoice.py"]))
+        # Own globs keep the default security words: the word token, not the path, makes it security.
         found = classify.classify("Fix token expiry in src/auth/tokens.py", FILES, rules=rules)
-        self.assertEqual((found["class"], found["security"]), ("standard", []))
+        self.assertEqual((found["class"], found["security"]), ("security", []))
         found = classify.classify("Polish docs/usage.md", FILES, rules=rules)
         self.assertEqual(found["class"], "mechanical")
 
@@ -124,6 +132,19 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(classify.CAP, 2000)
         found = classify.classify("Fix `$(rm -rf /)` in README; src/api/routes.py; ../../etc/passwd", FILES)
         self.assertEqual(found["paths"], ["README.md", "src/api/routes.py"])
+
+    def test_security_words_only_raise_the_class(self) -> None:
+        for text in ("rotate the api token", "Passwort-Regeln verschärfen", "Design the auth flow for src/ui",
+                     "Decide which api key we use"):
+            with self.subTest(goal=text):
+                found = classify.classify(text, FILES, SYMBOLS)
+                self.assertEqual(found["class"], "security")
+                self.assertTrue(found["threat_model"])
+                self.assertTrue(any(g.startswith("threat model:") for g in found["gates"]), found["gates"])
+        plain = classify.classify("Fix the crash in src/api/handlers.py; the keyword list stays", FILES)
+        self.assertEqual((plain["class"], plain["threat_model"]), ("standard", None))
+        found = classify.class_of("speed up the preview", ["web/sandbox/**"], ["web/sandbox/preview.ts"])
+        self.assertEqual((found["class"], found["reasons"]), ("security", ["security word sandbox"]))
 
     def test_a_new_file_in_a_known_folder_is_a_path(self) -> None:
         found = classify.classify("Implement the goal command in .agents/bin/teamlib/goal.py", FILES)
@@ -138,24 +159,9 @@ def goal_module():
     return module
 
 
-def writable_project(*args, **kwargs) -> Project:
-    real_copytree = shutil.copytree
-
-    def copytree_writable(src, dst, *a, **kw):
-        out = real_copytree(src, dst, *a, **kw)
-        if Path(src) == SOURCE:
-            for path in [Path(out), *Path(out).rglob("*")]:
-                if not path.is_symlink():
-                    path.chmod(path.stat().st_mode | 0o200)
-        return out
-
-    with mock.patch("test_team_cli.shutil.copytree", side_effect=copytree_writable):
-        return Project(*args, **kwargs)
-
-
 class GoalTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.p = writable_project()
+        self.p = Project()
         self.addCleanup(self.p.close)
         self.team_dir = self.p.root / ".agents" / "team"
         (self.p.root / "src" / "auth").mkdir(parents=True)
@@ -194,6 +200,41 @@ class GoalTest(unittest.TestCase):
         self.assertIn("Paths: file.txt\n", brief)
         self.assertNotIn("Threat model:", brief)
 
+    def test_goal_new_preserves_existing_padding(self) -> None:
+        for ids, expected in ((["T-0155"], "T-0156"), (["T-137", "T-0150"], "T-0151"),
+                              (["T-0999"], "T-1000")):
+            with self.subTest(ids=ids):
+                project = Project()
+                try:
+                    for task in ids:
+                        done = project.team("task", "new", "existing", "--class", "standard", "--id", task)
+                        self.assertEqual(done.returncode, 0, done.stderr)
+                    done = project.team("goal", "new", "Fix file.txt", "--repo", str(project.root))
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertIn(f"Task: {expected}\n", done.stdout)
+                finally:
+                    project.close()
+
+    def test_board_next_task_preserves_existing_padding(self) -> None:
+        goal = goal_module()
+        board = self.team_dir / "board.md"
+        for ids, expected in (([], "T-1"), (["T-0155"], "T-0156"),
+                              (["T-137", "T-0150"], "T-0151"), (["T-0999"], "T-1000")):
+            with self.subTest(ids=ids), mock.patch.object(goal, "team_dir", return_value=self.team_dir):
+                board.write_text("".join(f"| {task} | title |\n" for task in ids))
+                self.assertEqual(goal.board_next_task(), expected)
+
+    def test_a_security_word_makes_the_goal_security_even_without_paths(self) -> None:
+        # The security words read the whole goal, past the cap that keywords and paths stop at.
+        long = "design the api " + "lorem ipsum dolor sit amet " * 80 + "and rotate the token"
+        for n, text in enumerate(("rotate the api token", "Passwort-Regeln verschärfen", long), 1):
+            with self.subTest(goal=text):
+                self.team("goal", "new", text, "--repo", str(self.p.root))
+                brief = (self.team_dir / "env" / "lead" / f"T-{n}.md").read_text()
+                self.assertIn("Class: security\n", brief)
+                self.assertIn("Paths: TO FILL\n", brief)
+                self.assertIn("Threat model: ", brief)
+
     def test_symbols_from_the_context_graph_name_paths(self) -> None:
         self.team("goal", "new", "Fix `check_session` for empty tokens", "--repo", str(self.p.root))
         self.assertIn("Paths: src/auth/login.py\n", (self.team_dir / "env" / "lead" / "T-1.md").read_text())
@@ -203,6 +244,14 @@ class GoalTest(unittest.TestCase):
         brief = (self.team_dir / "env" / "lead" / "T-1.md").read_text()
         self.assertNotIn(FAKE_KEY, out + brief + json.dumps(self.events()))
         self.assertNotIn("y" * 2001, brief)
+
+    def test_a_masked_secret_keeps_the_review_floor(self) -> None:
+        # A secret-shaped string that holds a former stem ("token"): masked wherever it is shown, still security.
+        shaped = "gh" + "p_" + "token" + "a" * 31
+        out = self.team("goal", "new", f"inspect {shaped} in file.txt", "--repo", str(self.p.root))
+        brief = (self.team_dir / "env" / "lead" / "T-1.md").read_text()
+        self.assertIn("Class: security\n", brief)
+        self.assertNotIn(shaped, out + brief + json.dumps(self.events()))
 
     def test_leaving_a_phase_needs_the_lead_and_under_ask_the_human_first(self) -> None:
         self.team("goal", "new", "Fix the typo in file.txt", "--repo", str(self.p.root))
@@ -229,7 +278,7 @@ class GoalTest(unittest.TestCase):
             return out
 
         with mock.patch.object(shutil, "copytree", side_effect=copytree_readonly):
-            proj = writable_project()
+            proj = Project()
             self.addCleanup(proj.close)
             self.assertTrue(os.access(proj.config, os.W_OK))
 
@@ -238,7 +287,7 @@ class PhaseTest(unittest.TestCase):
     """CONCEPT, REALIZE and VERIFY in process, with the call of team flow and team batch recorded instead."""
 
     def setUp(self) -> None:
-        self.p = writable_project()
+        self.p = Project()
         self.addCleanup(self.p.close)
         self.team_dir = self.p.root / ".agents" / "team"
         (self.p.root / "src" / "auth").mkdir(parents=True)
@@ -573,7 +622,7 @@ class LiveGoalTest(unittest.TestCase):
     exercised through the real flow and batch commands without stubbing team_call."""
 
     def setUp(self) -> None:
-        self.p = writable_project(mode="host", runner="fake")
+        self.p = Project(mode="host", runner="fake")
         self.addCleanup(self.p.close)
         self.team_dir = self.p.root / ".agents" / "team"
         bots = self.team_dir / "bots"

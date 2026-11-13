@@ -18,6 +18,7 @@ from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import writable_copy  # noqa: E402
 from test_team_cli import Project  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +26,7 @@ SOURCE = ROOT / ".agents"
 TEAM = SOURCE / "bin" / "team"
 # What .agents/bin/federate (and later bin/project) take from bin/team when they load it as a module.
 FEDERATE_NAMES = ("say", "put", "put_bytes", "secret_in", "config", "get", "team_dir", "env_dir", "CLASSES", "TASK",
-                  "visible", "words", "secrets_module", "class_options", "read_json")
+                  "visible", "words", "secrets_module", "class_options", "read_json", "known_classes")
 HELLO = '''"""A command module for the tests."""
 
 from __future__ import annotations
@@ -65,6 +66,8 @@ MOVED_NAMES = {
             "release", "prepare", "check_inputs", "stage_run", "run", "LAUNCH", "supervise", "execute", "collect",
             "span", "shown", "report", "cmd_result", "LIMIT_PATTERNS", "LIMIT_TAIL", "CLOCK", "RELATIVE", "ISO",
             "EPOCH", "reset_time", "limit_hit", "return_block", "thaw", "remove_tree"),
+    "usage": ("USAGE_MARK", "TOKENS", "USAGE_LINE", "USAGE_SINCE", "USAGE_ADAPTERS", "usage_adapter", "usage_step",
+              "run_steps_usage", "usage_of", "receipt", "claude_project", "claude_usage"),
     "gate": ("GATE_LINES", "GATE_USAGE", "fresh_cache", "cmd_gate", "gate_execute", "run_masked"),
     "flow": ("CLASS_DEFAULTS", "class_options", "review_verdict", "FLOW_ROUNDS", "RUN_KINDS", "flow_next",
              "FLOW_MAX_STEPS", "FLOW_EXIT", "FLOW_OUTCOME", "flow_dir", "flow_lock", "flow_fallbacks", "head_of",
@@ -73,9 +76,9 @@ MOVED_NAMES = {
 # The commands of team help at 9fc6165, when bin/team held them all; each is now registered by exactly one module.
 BASE_COMMANDS = ("bot", "context", "doctor", "export", "flow", "gate", "image", "import", "install", "result", "run",
                  "runners", "status")
-# The modules in import order: each may import only the ones before it (core <- engine <- run <- gate <- flow <-
-# status); porting and stats sit beside that chain.
-ORDER = ("core", "engine", "run", "gate", "flow", "status")
+# The modules in import order: each may import only the ones before it (core <- engine <- usage <- run <- gate <-
+# flow <- status); porting and stats sit beside that chain.
+ORDER = ("core", "engine", "usage", "run", "gate", "flow", "status")
 # team help before the command modules left bin/team: they may change the order of its lines, never a line.
 HELP_BEFORE = '''team: run this folder's agent team. Every bot works in its own sandbox; this folder stays untouched.
 
@@ -180,7 +183,7 @@ class Pack:
     def __init__(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name) / "proj"
-        shutil.copytree(SOURCE, self.root / ".agents", ignore=shutil.ignore_patterns("__pycache__"))
+        writable_copy(SOURCE, self.root / ".agents", ignore=shutil.ignore_patterns("__pycache__"))
         self.lib = self.root / ".agents" / "bin" / "teamlib"
         caller = {k: v for k, v in os.environ.items() if not k.startswith("WOUF_")}
         self.env = {**caller, "WOUF_SECRET_BACKEND": "file", "WOUF_SECRET_DIR": str(Path(self.tmp.name) / "store")}
@@ -410,6 +413,11 @@ class SplitTest(unittest.TestCase):
                     self.assertNotIn(name, left)
                     self.assertIn(name, held)
 
+    def test_the_usage_names_left_run_and_engine(self) -> None:
+        for stem in ("run", "engine"):
+            with self.subTest(module=stem):
+                self.assertFalse(set(MOVED_NAMES["usage"]) & defined(SOURCE / "bin" / "teamlib" / f"{stem}.py"))
+
     def test_help_prints_the_same_lines_as_before(self) -> None:
         env = {k: v for k, v in os.environ.items() if not k.startswith("WOUF_")}
         with tempfile.TemporaryDirectory() as tmp:
@@ -555,6 +563,13 @@ class LauncherTest(unittest.TestCase):
         for path in sorted((SOURCE / "bin" / "teamlib").glob("*.py")):
             with self.subTest(module=path.name):
                 self.assertLess(len(path.read_text(encoding="utf-8").splitlines()), 1300)
+
+    def test_run_and_engine_left_room(self) -> None:
+        # P01 made room for the packages after it: neither may grow back over 1200 lines.
+        for stem in ("run", "engine"):
+            with self.subTest(module=stem):
+                path = SOURCE / "bin" / "teamlib" / f"{stem}.py"
+                self.assertLessEqual(len(path.read_text(encoding="utf-8").splitlines()), 1200)
 
     def test_the_supervisor_and_the_flow_steps_start_bin_team_by_its_absolute_path(self) -> None:
         # run, flow_step and flow --detach start bin/team itself, never a module a bot could have put a file next to.

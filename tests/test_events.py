@@ -14,6 +14,8 @@ import unittest
 from unittest.mock import patch
 
 from test_log import helper, LOG, HITS
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
 
 
 def append_batch(directory, count):
@@ -21,6 +23,10 @@ def append_batch(directory, count):
     log = helper(LOG)
     for _ in range(count):
         log.event_append('session.started', 'lead', '', {'reason': 'startup'})
+
+
+def setUpModule() -> None:
+    isolate_wouf_env()
 
 
 class Events(unittest.TestCase):
@@ -79,6 +85,8 @@ class Events(unittest.TestCase):
             data = {k: samples.get(k, 1) for k in keys}
             if kind == 'lesson.accepted':
                 data['id'] = 'L-aaaaaaaaaaaa-1'
+            if kind == 'flow.step':
+                data.update(head='a' * 40, base='b' * 64)
             self.log.event_append(kind, 'team', 'T-1', data)
             with self.assertRaises(SystemExit):
                 self.log.event_append(kind, 'lead', '', {'unknown_field': 'x'})

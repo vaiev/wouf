@@ -7,10 +7,15 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, wouf_env
 from test_team_cli import KEY, Project
 from test_team_cli_gate import PLANT, VICTIM, branch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.agents/bin'))
 from teamlib import bwrap
+
+
+def setUpModule():
+    isolate_wouf_env()
 
 
 class GateSetup(unittest.TestCase):
@@ -39,8 +44,16 @@ class GateSetup(unittest.TestCase):
         self.assertIn('none', result.stderr + result.stdout)
 
 
-@unittest.skipUnless(bwrap.bwrap_usable(), 'bwrap cannot start a sandbox here')
 class BwrapGateTest(GateSetup):
+    @classmethod
+    def setUpClass(cls):
+        # Asked here, not when the module is imported: setUpModule has not dropped the caller's WOUF_* by then, and
+        # bwrap --version and the trial sandbox would be started with them.
+        with wouf_env():
+            usable = bwrap.bwrap_usable()
+        if not usable:
+            raise unittest.SkipTest('bwrap cannot start a sandbox here')
+
     def ok(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

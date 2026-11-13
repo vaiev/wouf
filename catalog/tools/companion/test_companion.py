@@ -4,6 +4,8 @@ import urllib.error, urllib.request
 from pathlib import Path
 D = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, D)
 import companion
+sys.path.insert(0, str(Path(D).parents[2] / "tests"))
+from support import writable_copy  # the one helper for every copy of the checkout (tests/support.py)
 
 BOARD = """# Board
 
@@ -17,6 +19,7 @@ BOARD = """# Board
 - Which staging URL? (T-1)
 """
 SECRET = "gh" "p_" + "A1b2" * 9  # a full GitHub key shape, as the pack's SECRET_PATTERNS know it
+
 
 
 class T(unittest.TestCase):
@@ -574,7 +577,7 @@ class V8(unittest.TestCase):
 
     def test_a_link_inside_static_is_never_served(self):
         folder = self.tmp / "static"
-        shutil.copytree(STATIC, folder)
+        writable_copy(STATIC, folder)
         secret = self.tmp / "secret.css"; secret.write_text("body{}")
         (folder / "linked.css").symlink_to(secret)
         (folder / "v8" / "more").symlink_to(self.tmp, target_is_directory=True)

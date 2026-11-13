@@ -84,17 +84,20 @@ def block(args):
         print('[runner.local]')
         print('# Server URL: ' + root)
         if local:
+            inside = urlsplit(container_root)
+            pair = inside.hostname + ':' + str(inside.port or (443 if inside.scheme == 'https' else 80))
             print('# Containers use host.docker.internal (Docker) or host.containers.internal (Podman);')
             print('# for Podman replace host.docker.internal in command with host.containers.internal.')
-            print('# network = egress must list that host in [egress] allow; the current proxy refuses private addresses.')
-            print('# With mode = bwrap and network = none, a local server is not reachable.')
+            print('# network = egress: set [egress] private = ' + pair + ' (exactly this host and port;')
+            print('# the proxy refuses every other private address). With mode = bwrap and network = none,')
+            print('# a local server is not reachable.')
         print('install = npm install -g @openai/codex')
         print('command = ' + command(container_root, '--dangerously-bypass-approvals-and-sandbox --ephemeral'))
         print('host_command = ' + command(host_root, '--sandbox workspace-write'))
         print('model_flag = -m')
         print('strong = ' + args.model)
         print('light = ' + (args.light or args.model))
-        print('auth = none')
+        print('auth =')  # empty: no key; the pack reads any other value as a secret name
         return 0
     except ValueError:
         print('Check the URL and model name.', file=sys.stderr)

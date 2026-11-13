@@ -21,18 +21,23 @@ import json
 import os
 import re
 import sys
+import threading
 from datetime import datetime, timezone
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
+from teamlib import core
 from teamlib.core import (KNOWN, PACK, case_twin, die, env_dir, mask_secrets, member_problem, put, read_json, say,
                           secret_in, task_problem, team_dir, visible, write_json)
 from teamlib import run
 
 USAGE = """
-  team task new TITLE --class C [--owner ID] [--id T]    a task in the store with the next free id (T-<n>), status todo
-  team task start|block|review|done T [--reason TEXT] [--gate TEXT] [--artifacts A...]
-                                                its status (working, blocked, review, done); block needs --reason
+  team task new TITLE --class C [--owner ID] [--id T]    a task with the next free id (T-<n>, preserving existing zero padding), status todo
+  team task class T CLASS                       gives a task with no class its class, once; never fewer reviews than standard
+  team task start|working|block|review|done|todo T [--reason TEXT] [--gate TEXT] [--artifacts A...]
+                                                its status (start or working: working, block: blocked, review,
+                                                done, todo); --reason on every status change, in the board's reason
+                                                column (block needs it); done answers T's open questions "task T done"
   team question add T "text" [--from ID]        an open question for the human, kept with its sender (Q-<n>)
   team question answer Q-n "text"               the answer; the question leaves the board
   team decision add "title" --options A... --why TEXT --risk TEXT --authority lead|owner|decide [--task T]
@@ -50,9 +55,8 @@ USAGE = """
                                                 from the store (read only)
 """
 
-# bin/team's CLASSES; a module cannot import bin/team (tests/test_state_cmd.py keeps the two equal).
-CLASSES = ("mechanical", "standard", "complex", "security", "decision", "analysis", "plan")
-STATES = {"start": "working", "block": "blocked", "review": "review", "done": "done"}
+STATES = {"start": "working", "working": "working", "block": "blocked", "review": "review", "done": "done",
+          "todo": "todo"}
 STATUSES = ("todo", "working", "blocked", "review", "done")
 AUTHORITY = {"owner": "human", "lead": "standing yes lead", "decide": "decide bot within the rules (autonomy = auto)"}
 DECIDER = {"owner": "human", "lead": "lead", "decide": "decide"}
@@ -64,6 +68,10 @@ CAP = {"title": 200, "text": 500, "reason": 200, "gate": 100, "artifacts": 300, 
 MAX_OPTIONS = 5
 EXPORTS = ("board.md", "decisions.md", "schedule.md")
 HASHES = "state-exports.json"
+# A transaction of more than one event, committed and not yet all in the store (transact, write_all).
+PENDING = ".state.pending.json"
+# The state lock this thread holds (locked): a reader inside a command reads under the command's hold.
+HELD = threading.local()
 QID = re.compile(r"Q-([0-9]{1,9})")
 DID = re.compile(r"D-([0-9]{1,9})")
 SID = re.compile(r"S-([0-9]{1,9})")
@@ -129,15 +137,24 @@ def store():
 
 
 @contextlib.contextmanager
-def locked():
+def locked(shared: bool = False):
     """One state command at a time: the next free id, the append, the exports and their hashes. Its own lock file,
-    never bin/log's events/.lock, which event_append takes itself."""
+    never bin/log's events/.lock, which event_append takes itself. shared: a reader (snapshot), which waits for a
+    transaction being written and holds the next one off until it has read. A thread that holds it already reads
+    and writes under that hold."""
     import fcntl
+    if getattr(HELD, "lock", False):
+        yield
+        return
     folder = env_dir()
     folder.mkdir(parents=True, exist_ok=True)
     with (folder / ".state.lock").open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        yield
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH if shared else fcntl.LOCK_EX)
+        HELD.lock = True
+        try:
+            yield
+        finally:
+            HELD.lock = False
 
 
 def table(db, name: str) -> list[dict]:
@@ -163,17 +180,43 @@ def questions_of(rows: list[dict]) -> dict:
 
 def snapshot(log, more: tuple = ()) -> dict:
     """Everything the commands and the exports need, read from the projection (bin/log's state_db); more names
-    further tables read as they are (context and status: runs, flows)."""
-    db = log.state_db()
-    try:
-        tasks, decisions, schedule = table(db, "tasks"), table(db, "decisions"), table(db, "schedule")
-        merges = [r for r in table(db, "runs") if r.get("outcome") in ("proposed", "marked") and r.get("head")]
-        questions = questions_of(table(db, "questions"))
-        extra = {name: table(db, name) for name in more}
-    finally:
-        db.close()
-    return {"tasks": tasks, "decisions": decisions, "schedule": schedule, "merges": merges, "questions": questions,
-            **extra}
+    further tables read as they are (context and status: runs, flows). Read under the state lock, shared: the
+    projection and the pending transaction come from one moment, never from both sides of a write."""
+    with locked(shared=True):
+        db = log.state_db()
+        try:
+            tasks, decisions, schedule = table(db, "tasks"), table(db, "decisions"), table(db, "schedule")
+            merges = [r for r in table(db, "runs") if r.get("outcome") in ("proposed", "marked") and r.get("head")]
+            questions = questions_of(table(db, "questions"))
+            extra = {name: table(db, name) for name in more}
+        finally:
+            db.close()
+        return pending_view({"tasks": tasks, "decisions": decisions, "schedule": schedule, "merges": merges,
+                             "questions": questions, **extra})
+
+
+def pending() -> tuple[list, int]:
+    """The transaction transact committed whose write a kill or a full disk cut short: its events and how many of
+    them are in the store already; ([], 0) when there is none."""
+    found = read_json(env_dir() / PENDING)
+    return [tuple(e) for e in found.get("events", [])], int(found.get("written", 0))
+
+
+def pending_view(snap: dict) -> dict:
+    """snap with the events of a cut transaction that are not in the store yet, so every reader sees all of a
+    transaction or none of it; the next state command writes them (transact)."""
+    events, written = pending()
+    tasks = {t["id"]: t for t in snap["tasks"]}
+    for kind, _actor, task, data in events[written:]:
+        if kind.startswith("task."):
+            tasks.setdefault(task, {"id": task}).update(data)
+        elif kind == "question.asked":
+            snap["questions"][data["id"]] = {"id": data["id"], "task": task, "from": data["from"],
+                                             "text": data["text"], "status": "open"}
+        elif kind == "question.answered" and data["id"] in snap["questions"]:
+            snap["questions"][data["id"]]["status"] = "answered"
+    snap["tasks"] = list(tasks.values())
+    return snap
 
 
 def last_runs(runs: list[dict]) -> dict:
@@ -410,11 +453,11 @@ def transact(prepare, imported: list | None = None) -> int:
     log = store()
     imported = [] if imported is None else imported
     with locked():
+        write_all(log, *pending())
         before = snapshot(log, ("phases",))
         events, line = prepare(before)
         check(log, events)
-        for kind, actor, task, data in events:
-            log.event_append(kind, actor, task, data)
+        write_all(log, events)
         edited = export(before, snapshot(log), imported[0] if imported else None)
     for path in edited:
         if path.name == "board.md":
@@ -427,6 +470,20 @@ def transact(prepare, imported: list | None = None) -> int:
         line += f"; {imported[0][0]} regenerated from the store"
     say(line)
     return 0
+
+
+def write_all(log, events: list, written: int = 0) -> None:
+    """Write events from written on as one transaction. More than one are committed first: the pending file, written
+    atomically, names them all and counts those in the store; it goes once the last is in. A write cut short after
+    the commit is finished by the next state command (transact) and seen whole by readers before (pending_view); one
+    cut before it wrote nothing. An event cut off just before its count is written again, which the projection,
+    keyed by task and question, takes as the same state."""
+    journal = env_dir() / PENDING
+    for i in range(written, len(events)):
+        if len(events) > 1:
+            write_json(journal, {"events": events, "written": i})
+        log.event_append(*events[i])
+    journal.unlink(missing_ok=True)
 
 # ---------------------------------------------------------------- arguments and fields
 
@@ -525,15 +582,16 @@ def do_task(rest: list[str]) -> int:
             die(usage)
         title = need(field, "title", positional[0])
         klass = opts["--class"]
-        if klass not in CLASSES:
-            die(f"class {klass!r} is not one of {', '.join(CLASSES)}")
+        classes = core.known_classes()
+        if klass not in classes:
+            die(f"class {klass!r} is not one of {', '.join(classes)}")
         owner = need(person, opts.get("--owner", "lead"))
 
         def prepare(snap):
             known = [t["id"] for t in snap["tasks"]]
             reserved = known + [r.get("task") or "" for r in snap["phases"]]
             reserved += [p.stem for p in (env_dir() / "lead").glob("*.md")]
-            task = opts.get("--id") or f"T-{next_number([k.upper() for k in reserved], re.compile(r'T-([0-9]+)'))}"
+            task = opts.get("--id") or core.next_task_id(reserved)
             if "." in task:
                 die("task id cannot contain a dot (flow reserves dotted ids)")
             need(task_id, task)
@@ -547,15 +605,18 @@ def do_task(rest: list[str]) -> int:
             return [("task.created", "lead", task, {"title": title, "class": klass, "owner": owner})], \
                 f"{task} todo ({klass}, owner {owner})"
         return transact(prepare)
+    if action == "class":
+        return importlib.import_module("teamlib.taskclass").do_class(args, usage)
     if action not in STATES:
         die(usage)
     positional, opts = parse(args, usage, single=("--reason", "--gate"), many=("--artifacts",))
     if len(positional) != 1:
         die(usage)
     task, state = need(task_id, positional[0]), STATES[action]
-    if (state == "blocked") != ("--reason" in opts):
-        die("block needs --reason TEXT; only block takes it")
-    data = {"state": state, "blocked_reason": need(field, "reason", opts["--reason"]) if state == "blocked" else ""}
+    if state == "blocked" and "--reason" not in opts:
+        die("block needs --reason TEXT")
+    # Every status change may say why; the event keeps it in its one reason key, the board in its reason column.
+    data = {"state": state, "blocked_reason": need(field, "reason", opts["--reason"]) if "--reason" in opts else ""}
     if "--gate" in opts:
         data["next_gate"] = need(field, "gate", opts["--gate"])
     if "--artifacts" in opts:
@@ -563,8 +624,22 @@ def do_task(rest: list[str]) -> int:
 
     def prepare(snap):
         known_task(snap, task)
-        return [("task.state", "lead", task, data)], f"{task} {state}"
+        closed, said = done_answers(snap, task) if state == "done" else ([], "")
+        # One transaction (write_all): the answers and the state are committed together, a cut write is seen whole
+        # and finished by the next state command, never T done with an open question.
+        return [*closed, ("task.state", "lead", task, data)], f"{task} {state}{said}"
     return transact(prepare)
+
+
+def done_answers(snap: dict, task: str) -> tuple[list[tuple], str]:
+    """The answer events that close a done task's open questions, oldest first, and what the command adds to its line
+    about them; other tasks' questions stay."""
+    open_ = sorted((q for q in snap["questions"].values() if q["status"] == "open" and q["task"] == task),
+                   key=lambda q: natural(q["id"]))
+    events = [("question.answered", "lead", task, {"id": q["id"], "text": f"task {task} done", "from": q["from"]})
+              for q in open_]
+    return events, f"; {', '.join(q['id'] for q in open_)} answered: task {task} done" if open_ else ""
+
 
 # ---------------------------------------------------------------- question
 

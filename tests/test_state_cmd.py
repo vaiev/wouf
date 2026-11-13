@@ -9,6 +9,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +28,16 @@ PROSE = "template prose: board.md's prose is the template's, rewritten on every 
 UPDATED = "derived: the store sets it to the day of T-1's latest event"
 HEAD = "0123456789abcdef0123456789abcdef01234567"
 OTHER = "fedcba9876543210fedcba9876543210fedcba98"
+
+
+def stats_classes(project) -> dict:
+    """stats.task_classes() as the project's own commands see the store."""
+    code = f"import json, sys; sys.path.insert(0, {str(project.root / '.agents' / 'bin')!r}); from teamlib import stats; " \
+           "print(json.dumps(stats.task_classes()))"
+    done = subprocess.run([sys.executable, "-c", code], cwd=project.root, env=project.env, capture_output=True,
+                          text=True)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
 
 
 class StateTest(unittest.TestCase):
@@ -74,7 +85,6 @@ class TaskTest(StateTest):
         self.team("task", "new", "new thing", "--class", "standard", "--owner", "worker")
         self.assertEqual(self.team("task", "start", "T-2", "--gate", "review").strip(), "T-2 working")
         self.assertIn("block needs --reason", self.team("task", "block", "T-2", code=2))
-        self.assertIn("block needs --reason", self.team("task", "start", "T-2", "--reason", "x", code=2))
         self.team("task", "block", "T-1", "--reason", "needs the staging URL")
         self.assertIn("| blocked | - | - | needs the staging URL |", self.board_rows()[0])
         self.team("task", "review", "T-1")
@@ -90,6 +100,24 @@ class TaskTest(StateTest):
         self.assertIn("not one of", self.team("task", "new", "x", "--class", "urgent", code=2))
         self.assertIn("member id", self.team("task", "new", "x", "--class", "standard", "--owner", "Bad Id", code=2))
 
+    def test_every_status_change_takes_a_reason(self) -> None:
+        self.team("task", "new", "x", "--class", "standard")
+        self.assertEqual(self.team("task", "start", "T-1", "--reason", "picked up").strip(), "T-1 working")
+        self.assertEqual(self.team("task", "working", "T-1", "--reason", "back on it").strip(), "T-1 working")
+        self.assertEqual(self.team("task", "review", "T-1", "--reason", "PR open").strip(), "T-1 review")
+        self.assertEqual(self.team("task", "todo", "T-1", "--reason", "parked").strip(), "T-1 todo")
+        self.assertIn("| todo | - | - | parked |", self.board_rows()[0])
+        self.assertEqual(self.team("task", "done", "T-1", "--reason", "landed #1").strip(), "T-1 done")
+        reasons = [(e["data"]["state"], e["data"]["blocked_reason"]) for e in self.events("task.state")]
+        self.assertEqual(reasons, [("working", "picked up"), ("working", "back on it"), ("review", "PR open"),
+                                   ("todo", "parked"), ("done", "landed #1")])
+        # The board's reason column, where a block reason shows.
+        self.assertIn("| done | - | - | landed #1 |", self.board_rows()[0])
+        # Without --reason a status change clears it, as before; block still needs one.
+        self.team("task", "start", "T-1")
+        self.assertIn("| working | - | - | - |", self.board_rows()[0])
+        self.assertIn("block needs --reason TEXT", self.team("task", "block", "T-1", code=2))
+
     def test_next_free_id_comes_from_the_store(self) -> None:
         self.team("task", "new", "one", "--class", "standard")
         # An event written elsewhere (another command, another origin) takes T-9: the next id is T-10, not T-2.
@@ -99,6 +127,22 @@ class TaskTest(StateTest):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertTrue(self.team("task", "new", "ten", "--class", "standard").startswith("T-10 "))
         self.assertEqual([r.split(" | ")[0] for r in self.board_rows()], ["| T-1", "| T-9", "| T-10"])
+
+    def test_task_new_preserves_existing_padding(self) -> None:
+        for ids, expected in ((["T-0155"], "T-0156"), (["T-137", "T-0150"], "T-0151"),
+                              (["T-0999"], "T-1000")):
+            with self.subTest(ids=ids):
+                project = Project()
+                try:
+                    for task in ids:
+                        done = project.team("task", "new", "existing", "--class", "standard", "--id", task)
+                        self.assertEqual(done.returncode, 0, done.stderr)
+                        self.assertTrue(done.stdout.startswith(task + " "))
+                    done = project.team("task", "new", "next", "--class", "standard")
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    self.assertTrue(done.stdout.startswith(expected + " "), done.stdout)
+                finally:
+                    project.close()
 
     def test_two_task_new_at_once_get_two_ids(self) -> None:
         command = [sys.executable, str(self.p.root / ".agents" / "bin" / "team"), "task", "new"]
@@ -122,8 +166,75 @@ class TaskTest(StateTest):
         self.assertTrue(self.team("task", "new", "next", "--class", "standard").startswith("T-13 "))
         self.assertIn("dot", self.team("task", "new", "bad", "--class", "standard", "--id", "T.1", code=2))
 
-    def test_classes_are_bin_teams(self) -> None:
-        self.assertEqual(state.CLASSES, team_module().CLASSES)
+    def classless(self, task: str = "T-5") -> None:
+        # A task created before classes existed: its task.created event has a title and no class.
+        done = subprocess.run([sys.executable, str(self.p.root / ".agents" / "bin" / "log"), "event", "add",
+                               "task.created", "--actor", "lead", "--task", task, "--data", '{"title": "old one"}'],
+                              env=self.p.env, capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+
+    def snapshot_class(self, task: str):
+        snap = json.loads(self.team("snapshot", "--json"))
+        return next(t["class"] for t in snap["tasks"] if t["id"] == task)
+
+    def test_old_store_without_a_class_reads_as_before(self) -> None:
+        self.classless()
+        self.assertIsNone(self.snapshot_class("T-5"))
+        self.assertEqual(stats_classes(self.p), {})
+        done = self.p.team("receipt", "need", "T-5")
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("the class of T-5 is not known", done.stderr)
+        self.assertTrue(self.team("task", "new", "next", "--class", "standard").startswith("T-6 "))
+
+    def test_task_class_gives_a_classless_task_its_class_once(self) -> None:
+        self.classless()
+        before = len(self.events())
+        out = self.team("task", "class", "T-5", "security")
+        self.assertEqual(out.strip(), "T-5 class security")
+        [event] = self.events()[before:]
+        self.assertEqual((event["kind"], event["task"], event["actor"]), ("task.created", "T-5", "lead"))
+        self.assertEqual(event["data"], {"class": "security"})
+        self.assertEqual(self.team("receipt", "need", "T-5").strip(), "reviews 2")
+        self.assertEqual(self.snapshot_class("T-5"), "security")
+        self.assertEqual(stats_classes(self.p), {"T-5": "security"})
+        self.assertIn("old one", self.board_rows()[0])
+        # Once: the class is now set, the same command and any other class are refused.
+        self.assertIn("T-5 already has the class security", self.team("task", "class", "T-5", "security", code=2))
+        self.assertIn("already has the class security", self.team("task", "class", "T-5", "complex", code=2))
+        self.assertEqual(len(self.events()), before + 1)
+
+    def test_help_task_lists_task_class_in_one_line(self) -> None:
+        lines = [ln for ln in self.team("help", "task").splitlines() if ln.startswith("  team task class ")]
+        self.assertEqual(len(lines), 1)
+
+    def test_task_class_refusals_write_nothing(self) -> None:
+        self.classless()
+        self.team("task", "new", "classed", "--class", "complex")
+        before = len(self.events())
+        self.assertIn("T-9 is not in the store", self.team("task", "class", "T-9", "standard", code=2))
+        self.assertIn("T-6 already has the class complex", self.team("task", "class", "T-6", "security", code=2))
+        self.assertIn("not one of", self.team("task", "class", "T-5", "urgent", code=2))
+        # standard requires one review: mechanical (1) is equal, decision and analysis (0) are fewer.
+        for lighter in ("decision", "analysis", "plan"):
+            self.assertIn("fewer reviews", self.team("task", "class", "T-5", lighter, code=2))
+        self.assertEqual(len(self.events()), before)
+        self.assertIsNone(self.snapshot_class("T-5"))
+        self.assertIn("usage", self.team("task", "class", "T-5", code=2))
+        self.assertEqual(self.team("task", "class", "T-5", "mechanical").strip(), "T-5 class mechanical")
+
+    def test_task_class_refuses_a_configured_class_with_no_review(self) -> None:
+        self.classless()
+        with (self.team_dir / "config.ini").open("a", encoding="utf-8") as handle:
+            handle.write("\n[class.quick]\ntier = light\nsteps = worker\n")
+        self.assertIn("fewer reviews", self.team("task", "class", "T-5", "quick", code=2))
+
+    def test_classes_come_from_core_known_classes(self) -> None:
+        self.assertFalse(hasattr(state, "CLASSES"))
+        self.assertIs(state.core.known_classes, team_module().known_classes)
+        self.assertIn("docs", self.team("task", "new", "x", "--class", "docs", code=2))
+        with (self.team_dir / "config.ini").open("a", encoding="utf-8") as handle:
+            handle.write("\n[class.docs]\ntier = strong\n")
+        self.assertEqual(self.team("task", "new", "x", "--class", "docs").strip(), "T-1 todo (docs, owner lead)")
 
 
 class SecretTest(StateTest):
@@ -181,6 +292,131 @@ class QuestionTest(StateTest):
         # Once answered, the sender may ask again on that task; ids keep counting.
         self.assertTrue(self.team("question", "add", "T-1", "one more?", "--from", "worker").startswith("Q-3 "))
         self.assertIn("- Q-3 T-1, from worker: one more?", self.file("board.md"))
+
+    def test_done_answers_the_tasks_open_questions(self) -> None:
+        self.team("task", "new", "one", "--class", "standard")
+        self.team("task", "new", "two", "--class", "standard")
+        self.team("question", "add", "T-1", "first?", "--from", "worker")
+        self.team("question", "add", "T-1", "second?", "--from", "review")
+        self.team("question", "add", "T-2", "other task?", "--from", "worker")
+        self.team("question", "answer", "Q-2", "no")
+        self.team("question", "add", "T-1", "third?", "--from", "review")
+        self.assertEqual(self.team("task", "done", "T-1").strip(), "T-1 done; Q-1, Q-4 answered: task T-1 done")
+        answered = [(e["task"], e["data"]) for e in self.events("question.answered")]
+        self.assertEqual(answered, [("T-1", {"id": "Q-2", "text": "no", "from": "review"}),
+                                    ("T-1", {"id": "Q-1", "text": "task T-1 done", "from": "worker"}),
+                                    ("T-1", {"id": "Q-4", "text": "task T-1 done", "from": "review"})])
+        # One transaction (write_all): the answers and then the task event, committed together.
+        self.assertEqual([e["kind"] for e in self.events()][-3:], ["question.answered", "question.answered",
+                                                                    "task.state"])
+        board = self.file("board.md")
+        self.assertNotIn("first?", board)
+        self.assertNotIn("third?", board)
+        self.assertIn("- Q-3 T-2, from worker: other task?", board)
+        context = self.team("context")
+        self.assertNotIn("Q-1", context)
+        self.assertNotIn("Q-4", context)
+        self.assertIn("Q-3 T-2", context)
+        # A task done again, with nothing open, says only its state.
+        self.assertEqual(self.team("task", "done", "T-1").strip(), "T-1 done")
+
+    def done_cut_after(self, task: str, written: int) -> subprocess.CompletedProcess:
+        """team task done TASK whose write stops after `written` events, as a kill or a full disk would stop it; -1
+        stops it before its commit, the pending file."""
+        driver = ("import sys\n"
+                  "sys.path.insert(0, sys.argv[1])\n"
+                  "from teamlib import state\n"
+                  "log = state.store()\n"
+                  "real, left = log.event_append, [int(sys.argv[3])]\n"
+                  "def append(*args):\n"
+                  "    if not left[0]:\n"
+                  "        raise OSError('No space left on device')\n"
+                  "    left[0] -= 1\n"
+                  "    return real(*args)\n"
+                  "def commit(*args):\n"
+                  "    raise OSError('No space left on device')\n"
+                  "log.event_append = append\n"
+                  "if left[0] < 0:\n"
+                  "    state.write_json = commit\n"
+                  "sys.exit(state.do_task(['done', sys.argv[2]]))\n")
+        return subprocess.run([sys.executable, "-c", driver, str(self.p.root / ".agents" / "bin"), task, str(written)],
+                              env=self.p.env, capture_output=True, text=True, timeout=300, cwd=self.p.root)
+
+    def test_an_interrupted_done_is_all_or_nothing(self) -> None:
+        pending = self.team_dir / "env" / ".state.pending.json"
+        self.team("task", "new", "spare", "--class", "standard")
+        for written in (-1, 0, 1, 2):
+            with self.subTest(written=written):
+                task = f"T-{written + 3}"
+                self.team("task", "new", task, "--class", "standard")
+                self.team("question", "add", task, "first?", "--from", "worker")
+                self.team("question", "add", task, "second?", "--from", "review")
+                before = self.events()
+                cut = self.done_cut_after(task, written)
+                self.assertNotEqual(cut.returncode, 0, cut.stdout)
+                context = self.team("context")
+                if written < 0:
+                    # Cut before its commit: nothing was written, the task is open with both questions.
+                    self.assertEqual((self.events(), pending.exists()), (before, False))
+                    self.assertIn(f"| {task} |", context)
+                    self.assertEqual(context.count(f" {task}, from"), 2, context)
+                    continue
+                # Committed: every reader sees the whole of it, the task done and neither question open.
+                self.assertTrue(pending.exists())
+                self.assertEqual(len(self.events()), len(before) + written)
+                self.assertNotIn(f"| {task} |", context)
+                self.assertNotIn(f" {task}, from", context)
+                # The next state command writes the rest, once, before its own event.
+                self.team("task", "start", "T-1")
+                self.assertFalse(pending.exists())
+                self.assertEqual([(e["kind"], e["task"]) for e in self.events()[len(before):]],
+                                 [("question.answered", task), ("question.answered", task), ("task.state", task),
+                                  ("task.state", "T-1")])
+                self.assertEqual([e["data"]["text"] for e in self.events("question.answered")[-2:]],
+                                 [f"task {task} done"] * 2)
+                self.assertIn("| done |", next(r for r in self.board_rows() if r.startswith(f"| {task} |")))
+
+    def test_a_reader_waits_for_a_done_being_written(self) -> None:
+        # A done paused after its first event holds the state lock: team context waits for it, then sees all of it.
+        task = re.search(r"T-[0-9]+", self.team("task", "new", "read while done", "--class", "standard"))[0]
+        self.team("question", "add", task, "first?", "--from", "worker")
+        self.team("question", "add", task, "second?", "--from", "review")
+        flag, go = Path(self.p.tmp.name) / "half", Path(self.p.tmp.name) / "go"
+        driver = ("import sys, time\n"
+                  "from pathlib import Path\n"
+                  "sys.path.insert(0, sys.argv[1])\n"
+                  "from teamlib import state\n"
+                  "log = state.store()\n"
+                  "real, flag, go = log.event_append, Path(sys.argv[3]), Path(sys.argv[4])\n"
+                  "def append(*args):\n"
+                  "    out = real(*args)\n"
+                  "    if not flag.exists():\n"
+                  "        flag.write_text('half')\n"
+                  "        while not go.exists():\n"
+                  "            time.sleep(0.05)\n"
+                  "    return out\n"
+                  "log.event_append = append\n"
+                  "sys.exit(state.do_task(['done', sys.argv[2]]))\n")
+        pipes = {"env": self.p.env, "cwd": self.p.root, "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+                 "text": True}
+        writer = subprocess.Popen([sys.executable, "-c", driver, str(self.p.root / ".agents" / "bin"), task,
+                                   str(flag), str(go)], **pipes)
+        self.addCleanup(writer.kill)
+        self.addCleanup(go.touch)
+        deadline = time.monotonic() + 120
+        while not flag.exists() and writer.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(flag.exists(), writer.communicate()[1] if writer.poll() is not None else "no first event")
+        reader = subprocess.Popen([sys.executable, str(self.p.root / ".agents" / "bin" / "team"), "context"], **pipes)
+        self.addCleanup(reader.kill)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            reader.wait(timeout=3)
+        go.touch()
+        out, err = reader.communicate(timeout=300)
+        self.assertEqual(reader.returncode, 0, err)
+        self.assertEqual(writer.communicate(timeout=300)[0].strip(), f"{task} done; Q-1, Q-2 answered: task {task} done")
+        self.assertNotIn(f"| {task} |", out)
+        self.assertNotIn(f" {task}, from", out)
 
     def test_reads_come_from_the_projection_not_the_event_files(self) -> None:
         source = (SOURCE / "bin" / "teamlib" / "state.py").read_text(encoding="utf-8")

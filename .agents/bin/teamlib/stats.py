@@ -12,7 +12,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from statistics import median
 
-from teamlib.core import PACK, KNOWN, config, die, dumps, get, say, team_dir
+from teamlib.core import PACK, KNOWN, config, die, dumps, get, log_dir, say, team_dir
 
 USAGE = '  team stats --transcripts DIR [--since DAYS] [--json] [--record]'
 TOKENS = ('input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens')
@@ -182,7 +182,7 @@ def task_classes():
 def bot_runs(cutoff):
     """The runs in the lead's receipts since cutoff: those whose cost names tokens (teamlib.run writes it at the end
     of every collected run). Returns (bot, task, total tokens or UNKNOWN); a value that is not digits is unknown."""
-    path = team_dir() / 'logs' / 'lead.jsonl'
+    path = log_dir() / 'lead.jsonl'
     runs = []
     try:
         lines = path.read_text(encoding='utf-8', errors='replace').splitlines() if path.is_file() else []

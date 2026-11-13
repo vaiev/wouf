@@ -4,6 +4,9 @@ A small forward proxy for bot containers: a bot reaches only the host names on a
 addresses. It is stage 1 of the egress design (`docs/specs/EGRESS-AND-KEY-PROXY.md`): the allowlist on `:3128`.
 The key proxy (`:8080`) is not part of it, because the bots run on subscription logins (see the last section).
 
+One narrow exception, `--private HOST:PORT`, lets a bot reach a model server on the host: exactly that address and
+port, nothing else private (see "Private pairs").
+
 One file, `egress_proxy.py`, standard library only, Python 3.9+. It opens no TLS: the bot's TLS goes end to end.
 
 ## Run
@@ -14,12 +17,14 @@ python3 egress_proxy.py --bind '*' --port 3128 --allow-file allow.txt --log /run
 
 The bot then gets `HTTPS_PROXY=http://<proxy>:3128` and `HTTP_PROXY=http://<proxy>:3128`. `--bind` defaults to
 `127.0.0.1`; `'*'` listens on every IPv4 interface, which in a proxy container is what the bot's network reaches.
-On start it prints `egress-proxy: listening on <bind>:<port>, <n> allowlist entries` to standard error.
+On start it prints `egress-proxy: listening on <bind>:<port>, <n> allowlist entries` to standard error, with
+`, <m> private pairs` added when `--private` is used.
 
 | Option | Default | What it does |
 | --- | --- | --- |
 | `--allow-file FILE` | none | allowlist file, may repeat |
 | `--allow HOST` | none | one allowlist entry, may repeat; added to the files |
+| `--private HOST:PORT` | none | one private pair that passes as it is, may repeat; see "Private pairs" |
 | `--log FILE` | standard error | the request log, appended |
 | `--bind ADDR`, `--port N` | `127.0.0.1`, `3128` | where it listens |
 | `--max-conns N` | 64 | connections at once; more get `503` |
@@ -57,6 +62,32 @@ pypi.org
 - The list is read once at start, from the files and options only, never from a request. An empty list refuses
   everything.
 
+## Private pairs
+
+The allowlist never reaches a private address: a listed name that resolves to one is refused. `--private HOST:PORT`
+is the one exception, for a model server on the host (llama.cpp, Ollama) that the bot must reach through the proxy.
+It names exactly one address and one port; it can repeat.
+
+- `HOST` is a literal loopback or private address (`127.0.0.1`, `10/8`, `172.16/12`, `192.168/16`, or `[::1]`
+  and `[fc00::/7]` in brackets), or the container host alias `host.docker.internal` (`host.containers.internal`
+  on Podman). Any other name, a wildcard (`*` or the all-zero address), a range (`11434-11440`), a network (`/8`), a public,
+  link-local, CGNAT or multicast address, or a URL stops the start with exit code 2. So does an IPv4 address
+  embedded in IPv6 (`[::ffff:a.b.c.d]`, `[::a.b.c.d]`, NAT64 `64:ff9b::`, 6to4 `2002:`): an IPv6 literal must be
+  `[::1]` or unique-local itself, nothing is unwrapped, and such a spelling matches no pair at request time.
+- `PORT` is one decimal number 1-65535.
+
+A request matches a pair only with that host, spelled the same way (an alias by its name, an address as a literal),
+and exactly that port: `127.0.0.1:11435` is refused when `127.0.0.1:11434` is listed, and so is every other private
+address. A literal is connected as it is, never resolved. An alias is resolved once, and every answer must be a
+loopback or private address, else the request is refused (`403 private-alias-not-private`): the alias cannot be
+pointed at a public host through DNS. To a pair, `CONNECT` on that port and plain HTTP with every method and a body
+pass (a model API is `POST`); the request goes upstream with `Connection: close`, so one request per connection. The
+log line of such a connection says `result=allowed reason=private`.
+
+The pairs widen nothing else: the allowlist, the public-address rule, the port rule and the method rule for every
+other host stay as they are. The bot's own loopback (`NO_PROXY=localhost,127.0.0.1,::1` in `team run`) never goes
+through the proxy; a pair is for the host's address, not the bot's.
+
 ## What passes and what is refused
 
 A request passes only if every check holds, in this order. Each refusal is answered with the status shown and logged
@@ -64,6 +95,7 @@ with the reason.
 
 | Request | Refused when | Status, log reason |
 | --- | --- | --- |
+| `CONNECT host:port`, any method `http://host:port/…` | never, when `host:port` is a `--private` pair as written above; an alias pair whose name resolves to a public address | passes with `reason=private`; `403 private-alias-not-private` |
 | `CONNECT host:443` | the host is an IP literal in any form (dotted, IPv6, integer, octal, hex) | `403 ip-literal` |
 | | the port is not exactly `443` | `403 port` |
 | | the host is not on the allowlist | `403 not-allowed` |

@@ -7,6 +7,8 @@ engine's host itself are recorded too, but are not round trips.
 
 from __future__ import annotations
 
+import configparser
+import importlib
 import io
 import json
 import os
@@ -382,6 +384,81 @@ class EngineCallsTest(unittest.TestCase):
         for path in [*self.p.root.rglob(".index.sqlite*"), *self.env.rglob("*")]:
             if path.is_file():
                 self.assertNotIn(MARKER.encode(), path.read_bytes(), path)
+
+
+class TaskMountsTest(unittest.TestCase):
+    """taskstore.task_mounts (plan T-0167, option B): each run gets its own task volume, and only the login volume is
+    shared by the tasks of one member. No engine is needed: the function only builds arguments."""
+
+    MEMBERS = ("ab", "a-b", "a-b-c", "worker", "work-er", "x1", "x-1", "login", "b-login")
+    # Task ids with ".", "_" and "-", including ones that end like another member's name or the login suffix.
+    TASKS = ("T-1", "T-2", "t-1", "1", "c", "b-c", "b--c", "c--d", "T.1", "T_1", "_x", "x.login", "login",
+             "b.login", "a-b", "1.0", "T-0167-1", "T-0167-1.fix", "a_b-c.d")
+
+    def setUp(self) -> None:
+        team_module()
+        self.engine = sys.modules["teamlib.engine"]
+        self.store = importlib.import_module("teamlib.taskstore")
+        self.ini = configparser.ConfigParser(interpolation=None)
+        self.ini.read_string("[team]\nname = Werkstatt\n")
+        self.base = self.engine.base(self.ini)
+
+    def volumes(self, member: str, task: str, login: bool) -> list[str]:
+        """The volume names of task_mounts, after checking every -v points where the plan says."""
+        mounts = self.store.task_mounts(self.ini, member, task, login)
+        self.assertEqual(mounts[0::2], ["-v"] * (len(mounts) // 2))
+        pairs = [arg.rsplit(":", 1) for arg in mounts[1::2]]
+        self.assertEqual([inside for _, inside in pairs], ["/bot", "/bot/login"] if login else ["/bot"])
+        return [name for name, _ in pairs]
+
+    def test_two_tasks_of_one_member_get_disjoint_volumes_and_share_only_the_login_one(self) -> None:
+        self.assertEqual(self.store.task_mounts(self.ini, "worker", "T-1", False),
+                         ["-v", f"{self.base}-worker--T-1:/bot"])
+        self.assertEqual(self.store.task_mounts(self.ini, "worker", "T-2", True),
+                         ["-v", f"{self.base}-worker--T-2:/bot", "-v", f"{self.base}-worker.login:/bot/login"])
+        one, two = self.volumes("worker", "T-1", True), self.volumes("worker", "T-2", True)
+        self.assertNotEqual(one[0], two[0])
+        self.assertEqual(one[1], two[1])
+        self.assertEqual(one[1], f"{self.base}-worker.login")
+
+    def test_the_member_volume_is_never_named(self) -> None:
+        for member in self.MEMBERS:
+            old = self.engine.volume(self.ini, member)
+            for task in self.TASKS:
+                for login in (False, True):
+                    with self.subTest(member=member, task=task, login=login):
+                        mounts = self.store.task_mounts(self.ini, member, task, login)
+                        self.assertNotIn(old, self.volumes(member, task, login))
+                        self.assertFalse(any(arg.startswith(old + ":") for arg in mounts), mounts)
+
+    def test_no_member_and_task_can_make_another_tasks_name_or_a_login_name(self) -> None:
+        members = [m for m in self.MEMBERS if self.engine.core.member_problem(m) is None]
+        tasks = [t for t in self.TASKS if self.engine.core.task_problem(t) is None]
+        self.assertEqual((members, tasks), (list(self.MEMBERS), list(self.TASKS)), "every sample id is valid")
+        task_names: dict[str, tuple] = {}
+        for member in members:
+            for task in tasks:
+                name = self.volumes(member, task, False)[0]
+                self.assertNotIn(name, task_names, (member, task, task_names.get(name)))
+                task_names[name] = (member, task)
+        login_names = {self.volumes(m, "T-1", True)[1] for m in members}
+        member_names = {self.engine.volume(self.ini, m) for m in members}
+        self.assertEqual(len(login_names), len(members))
+        self.assertEqual(set(task_names) & login_names, set())
+        self.assertEqual(set(task_names) & member_names, set())
+        self.assertEqual(login_names & member_names, set())
+        # The pairs a plain join would mix up: "a" + "b--c" against "a-b" + "c", and a task named like the login.
+        self.assertNotEqual(self.volumes("ab", "b--c", False), self.volumes("ab-b", "c", False))
+        self.assertNotEqual(self.volumes("ab", "login", True)[0], self.volumes("ab", "login", True)[1])
+
+    def test_ids_that_could_name_another_volume_or_a_host_path_are_refused(self) -> None:
+        for member, task in (("a--b", "c"), ("a.login", "T-1"), ("A", "T-1"), ("-a", "T-1"), ("a-", "T-1"),
+                             ("worker", "../x"), ("worker", "/etc"), ("worker", "x:/etc"), ("worker", "x/y"),
+                             ("worker", ""), ("worker", ".login"), ("worker", "-x"), ("worker", "a..b"),
+                             ("worker", "T-1\n")):
+            with self.subTest(member=member, task=task):
+                with self.assertRaises(ValueError):
+                    self.store.task_mounts(self.ini, member, task, True)
 
 
 if __name__ == "__main__":

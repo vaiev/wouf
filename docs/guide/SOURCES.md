@@ -13,7 +13,7 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 ### What WOUF is
 
 - An agent team in a folder, set up with the CLI you use; lead, worker, reviewer, decider: `README.md::WOUF`. Test not found (description).
-- Not a product or a platform; plain instructions plus helper scripts; used with the agent CLI you already have: `README.md::WOUF`, `README.md::Set it up (technical)`; helpers are standard-library Python: `INSTALL.md::3. Check the requirements`, `AGENTS.md::Layout`. Test: `tests/test_pack.py::OpenSourceFilesTest.test_helpers_are_executable` (helpers are executable Python scripts).
+- Plain instructions plus helper scripts; used with the agent CLI you already have: `README.md::WOUF`, `README.md::Set it up (technical)`; helpers are standard-library Python: `INSTALL.md::3. Check the requirements`, `AGENTS.md::Layout`. Test: `tests/test_pack.py::OpenSourceFilesTest.test_helpers_are_executable` (helpers are executable Python scripts).
 - WOUF is only the example name: `README.md::WOUF`, `.agents/team/config.ini::[team] name`. Test: `tests/test_team_cli.py::RunPlanTest.test_renamed_team` (a renamed team, "Atlas Worker").
 
 ### A plain folder
@@ -36,7 +36,7 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 
 ### Status
 
-- Version 0.1.0, dated 2026-11-06, guide describes `main`: `CHANGELOG.md::[0.1.0] - 2026-11-06`, `.agents/VERSION`. Publishing a release needs owner approval: `AGENTS.md::Guardrails`. Test not found.
+- Version 0.2.0, dated 2026-11-12, is the latest release, guide describes `main`: `CHANGELOG.md::[0.2.0] - 2026-11-12`, `.agents/VERSION`. Publishing a release needs owner approval: `AGENTS.md::Guardrails`. Test not found.
 
 ## Method
 
@@ -162,6 +162,58 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 
 - `team demo`, talk by name, "without WOUF", settings and bots: `README.md::WOUF`, `README.md::Use it`, `INSTALL.md::5. Hand over`. Test: `tests/test_demo.py::DemoTest.test_cli_json_repeat_cleanup_and_text`; the rest test not found (instructions).
 
+## The first ten minutes
+
+### The first ten minutes (introduction)
+
+- The times are rough guides: no measurement of the whole path exists in this tree. That a sandboxed team takes longer: see Stop 3 below.
+
+### Before you start
+
+- WSL 2 on Windows, because the helpers need a POSIX system: `INSTALL.md::1. Get the pack`, `.agents/skills/setup.md::Sequence of work`. Test not found (instruction).
+- Python 3.9 or newer and git; on a new Mac, `git` may only offer to install the developer tools: `.agents/bin/teamlib/status.py::cmd_doctor` (the checks, their comment and the fix `xcode-select --install`), `INSTALL.md::3. Check the requirements`. Test not found for the macOS stub (from the code comment).
+- An agent CLI, installed and signed in once: `README.md::Quickstart (no technical background needed)`. Test not found (instruction).
+
+### Stop 1: the demo, without a model
+
+- A fake agent, a disposable git repository, no model and no key: `.agents/bin/teamlib/demo.py::exercise`, `.agents/bin/teamlib/demo.py::TEAM_CONFIG`. Tests: `tests/test_demo.py::DemoTest.test_cli_json_repeat_cleanup_and_text` (0 model calls), `tests/test_demo.py::DemoTest.test_disposable_team_gets_only_its_own_minimal_config`. No network: from the code (local git commands and a fake agent); the test pins the report line that says so.
+- The two lines: the clone as in `INSTALL.md::1. Get the pack`; the demo run from another folder through the pack's own `bin/team`, a clone's own `config.ini` not read: `tests/test_demo.py::DemoTest.test_cli_json_repeat_cleanup_and_text` (run with the pack's `bin/team` from another folder), `tests/test_demo.py::DemoTest.test_demo_ignores_config_of_the_pack`.
+- Seconds, a temporary folder removed at the end, the starting folder unchanged: `.agents/bin/teamlib/demo.py::do_demo` (a temporary directory), `.agents/bin/teamlib/demo.py::isolated`. Test: `tests/test_demo.py::DemoTest.test_cli_json_repeat_cleanup_and_text` (two runs under 10 seconds; the starting folder byte for byte unchanged).
+- The shortened output and the three parts: `.agents/bin/teamlib/demo.py::exercise`, `.agents/bin/teamlib/demo.py::do_demo`; the lines are from a run of this tree. Test: `tests/test_demo.py::DemoTest.test_cli_json_repeat_cleanup_and_text` (`outside Paths: outside.txt`, the verdict `stale`, the refusal naming both commits, `approve`, the last line `PASS`).
+- The gate without a model and the approval of the exact commit: see Method, The brief and Fresh, independent review. The proposal never merges: `.agents/bin/teamlib/state.py::USAGE`. Test: `tests/test_state_cmd.py::MergeTest.test_propose_records_head_branch_and_verdict_and_never_merges`.
+
+### Stop 2: a first task in host mode
+
+- No sandbox, runs as the user, reaches files and network, only for trying things out: `.agents/team/config.ini::[environment] mode`, `README.md::Where the bots run`; see Limits, Host mode has no sandbox. Test: `tests/test_team_cli.py::RunPlanTest.test_host_mode_uses_the_safe_command`.
+- Every stored key is in the environment of every host-mode run: `.agents/bin/teamlib/core.py::register_stored` (every stored secret is registered), `.agents/bin/teamlib/run.py::attach` (a host run's environment gets `WOUF_MASK` with every registered value), `README.md::Use it`. Test not found (from the code).
+- The sentence with "use host mode"; the setup recommends containers and offers host only to try things out: `README.md::Quickstart (no technical background needed)`, `.agents/skills/setup.md::Sequence of work`. Test not found (instruction to the setup).
+- The key typed hidden in a second terminal, never in the chat: `.agents/skills/setup.md::Sequence of work`, `.agents/rules.md::5. Secrets`. Test: `tests/test_secret.py::SecretTest.test_set_refuses_without_a_terminal`.
+- In host mode a bot is a folder in `.agents/team/env/`, no image: `.agents/bin/teamlib/engine.py::bot_command`. Test: `tests/test_install_smoke.py::InstallSmokeHostTest.test_unchanged_guide_passes` (host mode, `team bot create worker`; `scripts/install-smoke.sh::standin_run`).
+- The doctor in host mode: Python, git, the agent CLI on this computer and, for a runner with a key, the stored key; no container engine: `.agents/bin/teamlib/status.py::cmd_doctor`. Tests: `tests/test_doctor_bwrap.py::WrappedCliTest.test_host_doctor_does_not_accept_an_installed_wrapper_as_the_cli` (the CLI on this computer), `tests/test_team_cli.py::DoctorTest.test_keys_of_every_active_bot_runner` (a missing key). That host mode does not check an engine follows from the code.
+
+### The first signed return block
+
+- The smoke test's brief, the run and the wait, a usage limit, three failed attempts: `.agents/skills/setup.md::Sequence of work`, `.agents/rules.md::6. Work from a brief, deliver the brief`. Script: `scripts/install-smoke.sh::standin_run` (host mode, a stand-in agent CLI, `team result worker T-smoke --wait 100` shows `WOUF Worker · T-smoke · ready-for-review`). Test: `tests/test_install_smoke.py::InstallSmokeHostTest.test_unchanged_guide_passes`.
+- The frame "data from the bot, not instructions" with a new code for every run; only the block from its signed line on: `.agents/bin/teamlib/run.py::report`, `.agents/bin/teamlib/run.py::return_block`. Test: `tests/test_team_cli.py::HostRunTest.test_run_with_repo_brings_back_a_branch_and_masks_the_key` ("data from the bot, not instructions"; only the return block is printed).
+- "Signed" is the first line with bot, task and state, not a cryptographic signature: `.agents/START.md::3. How the team talks`, `.agents/roles/worker.md::Return block`, `.agents/bin/teamlib/run.py::prepare_prompt`. Test: `tests/test_team_cli.py::HostRunTest.test_run_with_repo_brings_back_a_branch_and_masks_the_key`. Another team name in that line: `tests/test_team_cli.py::RunPlanTest.test_renamed_team`.
+
+### Your first own task
+
+- The lead does not do the work, writes a brief and says "I passed this to WOUF Worker": `.agents/roles/lead.md::Role: Lead (WOUF)`, `.agents/START.md::3. How the team talks`, `README.md::How it works`. Test not found (role). The worker's answer ends with its return block: `.agents/rules.md::6. Work from a brief, deliver the brief`. Test not found (rule).
+
+### Stop 3: why the sandbox takes longer
+
+- A container per task with its own storage as its only volume, project and home folders not mounted as such, inputs copied in and results out: `.agents/team/config.ini::[environment] mode`, `README.md::Where the bots run`; see Safety, Sandbox modes.
+- A container program, recommended and installed after a yes, possibly with a password or an installer window: `README.md::Where the bots run`, `.agents/skills/setup.md::Required inputs and access`. Test not found (instruction).
+- The team image, built with the first bot, "a few minutes once": `.agents/skills/setup.md::Sequence of work` (step 5), `.agents/bin/teamlib/status.py::cmd_doctor` ("takes minutes once"), `.agents/bin/teamlib/engine.py::bot_command` (container mode builds the image first). The duration is the setup's estimate; no test measures it.
+- Bubblewrap: see Safety, Sandbox modes, and Limits, Bubblewrap is weaker than a container.
+- The image reused, a container only while a bot works: `README.md::Where the bots run`, `.agents/team/config.ini::[environment] mode`; see Safety, Sandbox modes.
+- Changing where the bots run is part of the setup and needs the human first: `.agents/skills/setup.md::When to use`, `.agents/roles/lead.md::You ask the human first`. Test not found (role).
+
+### Next
+
+- Relative links: `tests/test_pack.py::PackStructureTest.test_relative_links_resolve`.
+
 ## Limits
 
 ### Rules are instructions, not enforcement
@@ -200,9 +252,9 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 
 - Tested with Docker and a stand-in CLI; container tests run when an engine is reachable: `README.md::Limits`, `README.md::Develop`, `CONTRIBUTING.md::Checks`. Skip conditions: `tests/test_team_cli_export.py::ContainerRunTest`, `tests/test_bwrap_isolation.py::BwrapIsolationTest`, `tests/test_bwrap_egress.py::BwrapEgressTest`.
 
-### Version 0.1.0
+### Version 0.2.0
 
-- Dated 2026-11-06, the first release, guide describes `main`: see Overview, Status; `CHANGELOG.md::[0.1.0] - 2026-11-06`. Test not found.
+- Dated 2026-11-12, the latest release, guide describes `main`: see Overview, Status; `CHANGELOG.md::[0.2.0] - 2026-11-12`. Test not found.
 
 ## Examples
 
@@ -243,6 +295,69 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 - Under `ask`, routine reversible work goes ahead; other decisions and the always-human steps go to a person, by rule; these are instructions, enforced only by the accounts, keys, destinations and permissions the organisation grants: `.agents/rules.md::3. Reversible is free, irreversible asks`. Test: `tests/test_pack.py::LeanPackTest.test_the_hard_limits_are_unchanged` pins the rule text only; enforcement test not found (instruction).
 - A bot given a key can leak it: `README.md::Limits`. Test not found (limitation).
 - The review bot checks against the brief only: `.agents/roles/review.md::Role: Review`, `.agents/roles/review.md::You check`. Test not found (role).
+
+## WOUF in a HERMES project
+
+- The HERMES facts come from the Federal Chancellery's HERMES page (`bk.admin.ch`) and HERMES Online (`hermes.admin.ch`) for HERMES 2022, read on 2026-11-06 and listed under Sources on that page. They are not repository sources, and no test checks them.
+
+### WOUF in a HERMES project (introduction)
+
+- HERMES developed by the federal government, freely available as an open standard, eCH-0054: the Federal Chancellery's HERMES page (external).
+
+### A comparison, not a conformity claim
+
+- No repository source claims that WOUF conforms to HERMES, is certified for it or implements it, and none was found in `.agents/`; this page makes no such claim. The authority example and its frame: see Examples, An authority, such as the Swiss federal administration.
+
+### Two levels
+
+- HERMES phases, milestones as quality gates, resources released with each phase release: HERMES Online, phases (external).
+- Four phases, each change a `phase.state` event: `.agents/bin/teamlib/goal.py::PHASES`, `.agents/bin/teamlib/goal.py::write_phase`, `.agents/bin/log::EVENT_DATA_KEYS`, `.agents/skills/brief.md::Sequence of work`. Test: `tests/test_goal.py::PhaseTest.test_the_four_phases_with_their_events_and_calls`.
+- A goal as a work package inside a HERMES phase: a recommendation of this page, not a claim.
+
+### Phases side by side
+
+- The commands as they run: the goal's task id and `--yes` to leave the phase before; a later wave stays in REALIZE without `--yes`: `.agents/bin/teamlib/goal.py::USAGE`, `.agents/bin/teamlib/goal.py::enter_check`. Tests: `tests/test_goal.py::PhaseTest.test_the_four_phases_with_their_events_and_calls` (`concept T-1 --yes`, `realize T-1 --wave 1 --yes`, wave 2 without `--yes`, `verify T-1 --yes`), `tests/test_goal.py::PhaseTest.test_recovery_status_and_failed_execution` (`complete T-1 --yes`). The task id in the draft brief: `tests/test_goal.py::GoalTest.test_new_writes_the_plan_brief_prints_it_and_the_init_event`.
+- INIT: a classifier without a model proposes class, Paths, gate checks and, for `security`, a threat model, and writes the draft brief: `.agents/bin/teamlib/goal.py::goal_new_locked`, `.agents/bin/teamlib/goal.py::render`, `.agents/bin/teamlib/classify.py::classify`. Tests: `tests/test_goal.py::GoalTest.test_new_writes_the_plan_brief_prints_it_and_the_init_event`, `tests/test_goal.py::ClassifierTest.test_same_input_same_output_whatever_the_order_of_the_files`. CONCEPT refuses `TO FILL`: `.agents/bin/teamlib/goal.py::brief_problems`. Test: `tests/test_goal.py::PhaseTest.test_an_untouched_or_incomplete_draft_brief_is_refused_before_concept`.
+- CONCEPT: `team flow` with `Class: plan`, scout and planner, a plan and draft briefs in waves, no package started, no commits: `.agents/bin/teamlib/goal.py::prepare_concept_brief`, `.agents/bin/teamlib/flow.py::CLASS_DEFAULTS`, `.agents/team/config.ini::[flow]` (the task-class comment), `.agents/skills/brief.md::Sequence of work`. Tests: `tests/test_goal.py::PhaseTest.test_the_four_phases_with_their_events_and_calls` (`Class: plan`), `tests/test_flow_parallel.py::ParallelMeasureTest.test_plan_with_scout_and_research` (scout, then the planner), `tests/test_team_cli.py::HostRunTest.test_a_planner_run_returns_no_commits`.
+- REALIZE: `team batch` on one wave, packages at the same time on their own workers, an overlap starts nothing: `.agents/bin/teamlib/goal.py::goal_realize`, `.agents/bin/teamlib/batch.py::module docstring`, `.agents/bin/teamlib/batch.py::run_batch`. Tests: `tests/test_goal.py::PhaseTest.test_the_four_phases_with_their_events_and_calls` (`team batch` per wave), `tests/test_batch.py::BatchCliTest.test_an_overlap_refuses_the_batch_and_names_both_packages`, `tests/test_goal_e2e.py::GoalJourneyTest.test_goal_realize_refuses_overlapping_globs_in_one_wave`. Each package as a flow through gate, review and rework: see Method, A whole task on its own. No merge: see Examples, A coding co-worker (`team merge propose` never merges).
+- VERIFY: review verdict, approved commit and merge proposal per package, inspection only; `team goal complete <task> --yes` ends it: `.agents/bin/teamlib/goal.py::goal_verify`, `.agents/bin/teamlib/goal.py::goal_complete`. Tests: `tests/test_goal.py::PhaseTest.test_the_four_phases_with_their_events_and_calls`, `tests/test_goal_e2e.py::GoalJourneyTest.test_goal_two_waves_recovery_and_verify` ("inspection only", head mismatch, completion).
+- HERMES Initiation, Concept, Implementation, Deployment, acceptance and the acceptance report as legally binding: HERMES Online, the phase pages and the acceptance report (external).
+- No phase or command for deployment or closure: none found in `.agents/bin/`. Merge, publish and deploy go through a person: `.agents/rules.md::3. Reversible is free, irreversible asks`. Test: `tests/test_pack.py::LeanPackTest.test_the_hard_limits_are_unchanged` pins the rule text only; enforcement test not found (instruction).
+
+### Phase changes and milestones
+
+- `--yes` to leave a phase, the message under `ask`, no phase skipped: `.agents/bin/teamlib/goal.py::enter_check`, `.agents/bin/teamlib/goal.py::reachable`. Tests: `tests/test_goal.py::GoalTest.test_leaving_a_phase_needs_the_lead_and_under_ask_the_human_first`, `tests/test_goal.py::PhaseTest.test_a_phase_is_never_skipped`. That the program sees only the flag: from the code; test not found.
+- `autonomy = ask` by default: `.agents/team/config.ini::[team] autonomy`. Test not found for the shipped default.
+- A decision that waits for a person (`team decision add "title" --options … --why … --risk … --authority owner`), approved later with `team decision approve D-<n>`, in `decisions.md`: `.agents/bin/teamlib/state.py::USAGE`. Tests: `tests/test_state_cmd.py::DecisionTest.test_approve_and_reject_only_a_pending_decision`, `tests/test_state_cmd.py::DecisionTest.test_records_in_todays_format_newest_first`.
+- HERMES milestones as states after a decision, steering decisions with the sponsor: HERMES Online, outcomes and list of steering project decisions (external).
+
+### Roles
+
+- HERMES roles and their responsibilities: HERMES Online, roles and work order (external).
+- The lead briefs, dispatches, relays questions and keeps the board; it never does the work: `.agents/roles/lead.md::Role: Lead (WOUF)`, `.agents/rules.md::7. State lives in the event log; the store is its cache, board and decisions are its readable export`. Test not found (role).
+- Bots ask the lead, the lead asks a person: `.agents/rules.md::1. Roles stay separate`, `README.md::How it works`. Test: `tests/test_live_state.py::RunEventsTest.test_a_bot_question_is_asked_by_the_bot_and_reaches_the_board_and_context`.
+- The review bot checks against the brief only: `.agents/roles/review.md::Role: Review`, `.agents/roles/review.md::You check`. Test not found (role).
+- Bots work from a brief in their own sandbox in container or `bwrap` mode: `.agents/rules.md::2. Each bot stays in its sandbox`, `.agents/rules.md::6. Work from a brief, deliver the brief`; see Safety, Sandbox modes.
+- The decide bot recommends under `ask`: `.agents/roles/decide.md::How you decide`. Test not found (role).
+
+### WOUF files as inputs to HERMES results
+
+- Brief path and sections: `.agents/skills/brief.md::Sequence of work`, `.agents/bin/teamlib/goal.py::SECTIONS`. Test: `tests/test_project_phases.py::ProjectTest.test_check_follows_the_brief_skill`.
+- Board columns and the questions for the human: `.agents/team/board.md::Board`, `.agents/team/board.md::Questions for the human`. Tests: `tests/test_state_cmd.py::TaskTest.test_task_new_writes_one_event_the_board_row_and_its_hash`, `tests/test_state_cmd.py::QuestionTest.test_questions_keep_their_sender_and_leave_the_board_when_answered`.
+- Decision entries: `.agents/team/decisions.md::Decisions`. Test: `tests/test_state_cmd.py::DecisionTest.test_records_in_todays_format_newest_first`.
+- Review verdict on the exact commit: `.agents/roles/review.md::Return block`, `.agents/bin/teamlib/flow.py::review_verdict`. Tests: `tests/test_flow_parts.py::ReviewVerdictTest.test_approve_on_the_head`, `tests/test_flow_parts.py::ReviewVerdictTest.test_approve_on_another_commit_is_no_approve`.
+- The event log's kinds: `.agents/bin/log::EVENT_DATA_KEYS`. Test: `tests/test_events.py::Events.test_kind_data_allowlist_and_validation`. One log line per run and member, searchable: `.agents/team/logs/README.md::Logs`. Tests: `tests/test_log.py::LogTest.test_add_writes_one_json_line_per_run`, `tests/test_log.py::LogTest.test_find_searches_the_index_and_limits_output`.
+- `team export --with-data`, never keys: `INSTALL.md::Move to another computer or share`, `.agents/skills/team.md::Sequence of work`. Tests: `tests/test_team_cli_export.py::ExportImportTest.test_export_has_declarations_and_no_data_by_default`, `tests/test_team_cli_export.py::ExportImportTest.test_export_with_data_and_refusal_of_secrets`.
+- HERMES results as documents or states, and the work order, project status report, lists of project decisions, review report and acceptance report: HERMES Online, outcomes and their pages (external).
+
+### What stays outside WOUF
+
+- No HERMES document is a WOUF feature: none found in `.agents/`. A bot drafts text from a brief: `README.md::Use it` (the writer bot); see Examples, Project management for a non-technical project. Test not found (instruction).
+- Data protection, information security and what the team may see: see Examples, An authority, such as the Swiss federal administration.
+
+### Sources
+
+- The external pages are listed on that page; the WOUF sources are this section.
 
 ## Contribute
 

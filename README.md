@@ -2,11 +2,23 @@
 
 **An agent team in a folder, set up with the AI tool you already use.**
 
-WOUF is an example of how you can work with AI agents the way a small company works with a team: one lead you talk to, who hands tasks to a worker, has a reviewer check the result, asks a decider for the hard calls, keeps your reminders, and tells you what happened. The bots run in their own sandboxes on your computer (or on a VM or server), so they cannot touch your files or each other.
+WOUF runs AI agents as a team with a real separation of roles (one lead you talk to in your own agent CLI, a worker who makes the change, an independent reviewer who checks it), the bots each in their own isolated sandbox (a Docker or Podman container, or `bwrap` on Linux; with `mode = host`, without one), with a model-free gate (checks that run before any review), an egress allowlist (with `network = egress`, a bot reaches only the hosts it is allowed) and signed receipts for each landed change, exportable to in-toto. It is plain standard-library Python.
 
-It is not a product or a platform. It is a folder of plain instructions plus six small standard-library Python helpers (`team`, `log`, `secret`, `project`, `federate`, `guard`), which you copy into a project and use with Claude Code, Codex CLI, Antigravity (agy), Grok Build or any agent CLI that reads `AGENTS.md`. Bots run on Claude Code, Codex CLI, Antigravity or a local model; Gemini CLI gets an adapter file for the lead but is not tested. WOUF is only the example name; call your team whatever you like.
+```bash
+git clone https://github.com/vaiev/wouf.git && cd wouf && python3 .agents/bin/team demo
+```
 
-Try `.agents/bin/team demo` for an offline, under-a-minute demonstration of the model-free gate and approval tied to an exact commit (Python 3.9+ and git).
+The demo runs offline and shows the model-free gate, an approval tied to an exact commit, a signed receipt verified offline, and a tampered copy refused (Python 3.9+ and git; the receipt step needs `ssh-keygen` and is skipped without it).
+
+It is a folder of plain instructions plus six small standard-library Python helpers (`team`, `log`, `secret`, `project`, `federate`, `guard`), which you copy into a project and use with Claude Code, Codex CLI, Antigravity (agy), Grok Build or any agent CLI that reads `AGENTS.md`. Bots run on Claude Code, Codex CLI or Antigravity. WOUF is only the example name; call your team whatever you like.
+
+## A receipt for each landed change
+
+Once the team has a signing key, the lead makes a receipt after each change lands, with `team receipt make`: a small signed file with the facts of that change. It shows that the files that landed are exactly the files that were tested and reviewed, which reviewers approved that exact version, and that the automatic checks (the gate) passed on it. If the command refuses, for example because a check is missing, the change stays merged without a receipt and the lead writes down why.
+
+The receipt is signed with the team's SSH key, the same key that signs its messages to other teams (federation). Anyone with the team's public key can check it on their own computer, without a network, with `team verify SHA --signers FILE`, where SHA is the landed commit and FILE holds the team's public key in the form [docs/RECEIPTS.md](docs/RECEIPTS.md) shows; a copy with one field changed is refused, as the demo shows. To check, you need the WOUF pack (Python 3.9+), git, OpenSSH 8.7 or newer, and a copy (clone) of the repository with the receipt notes, `refs/notes/wouf-receipts`, fetched. In a clone that holds the landed and reviewed commits (as `team demo` shows, or your own team's repository), `team verify` prints `verified` (exit 0); the public vaiev/wouf repository is a fresh-history export, so for the receipts of the development repository a clone of it prints `partial` (exit 3): the signature and the record check out, but the reviewed and landed commits are not in that clone. It also exports to in-toto, a format that supply-chain security tools read (`team receipt export SHA --in-toto`).
+
+The fingerprint of the key that signs WOUF's own receipts is `SHA256:kQfxHJ5w0JRzMT4JIburS5E0zGHlwk47+Zvauk5Ac1w` (key type ED25519); it is published in this repository and on wouf.dev, and a careful user compares it with a second copy, for example the release note of the tag, and with the one `team verify` prints before trusting it. A receipt shows what the team recorded and signed, not that the code is right. How it works and what it does not prove: [docs/RECEIPTS.md](docs/RECEIPTS.md).
 
 ## Quickstart (no technical background needed)
 
@@ -70,7 +82,7 @@ Requirements: an agent CLI, Python 3.9+, git, and for the sandboxes Docker or Po
 - Hand over a goal too big for one task: the planner bot turns it into a plan and draft tasks, and the lead reads and adjusts them before any of them runs.
 - Ask for more bots when work keeps coming up ("we need a research bot"); examples are ready: research, writer, tester, ops.
 - Ask for connectors when a bot needs a service ("give the tester a browser"); examples are ready: GitHub, Context7 (library docs), Playwright (browser), Memory. They are off until you say yes, and only the bot that has one gets its configuration and keys (in a container or bwrap sandbox; in `host` mode a run's environment also carries every registered value, for masking its log, so there this separation does not hold); what a connector installs goes into the image all bots share.
-- Ask the lead to stop or reset a bot, or to export the team for another computer or person (without keys and, unless you ask, without data). With data, the event log, flows, goals and practice files move only into a new team without events; bots arrive `proposed`, settings are copied by hand, and bot storage, logins and keys stay behind.
+- Ask the lead to stop or reset a bot, or to export the team for another computer or person (without keys and, unless you ask, without data). With data, the event log, flows, goals, the lead's briefs and practice files move only into a new team without events; bots arrive `proposed`, settings are copied by hand, and bot storage, logins and keys stay behind.
 
 ## Make it yours
 
@@ -83,7 +95,7 @@ Requirements: an agent CLI, Python 3.9+, git, and for the sandboxes Docker or Po
 | Roles: lead, worker, review, decide, specialist | `.agents/roles/` |
 | Skills: setup, brief, dispatch, review and merge, clock, secrets, team, toolkit | `.agents/skills/` |
 | Board, decisions, schedule, knowledge, logs, team skills, tools for the image | `.agents/team/` |
-| Helpers: `team` (bots, runs, doctor), `log` (receipts and search), `secret` (keys), `project` (a task's phases), `federate` (peer leads), `guard` (the lead's tripwire) | `.agents/bin/` |
+| Helpers: `team` (bots, runs, doctor), `log` (run records and search), `secret` (keys), `project` (a task's phases), `federate` (peer leads), `guard` (the lead's tripwire) | `.agents/bin/` |
 
 Everything outside `.agents/team/` is the shared pack; an update replaces the pack files recorded in `.agents/team/.pack-files` and leaves your team and your own files in `.agents/` as they are.
 
@@ -98,16 +110,19 @@ WOUF builds [Vaikor](https://github.com/vaiev/vaikor), and it builds itself: its
 | Review | Codex CLI | default Codex model, high effort |
 | Scout | Antigravity CLI | Gemini 4 Argon |
 
-The owner sets the direction, answers the questions, and approves pushes and anything public. The code and documentation of this repository are written by this agent team under the owner's lead; the owner reviews and commits every change. [docs/examples/T-0001.md](docs/examples/T-0001.md) follows one task from brief to approval, including a red gate and a worker that stopped and asked.
+The owner sets the direction, answers the questions the lead collects, and decides what goes public. The code and documentation of this repository are written by this agent team under the owner's lead. The lead merges pull requests in the private development repository itself, under the owner's standing OK, once a reviewer approved the exact head commit and CI is green. [docs/examples/T-0001.md](docs/examples/T-0001.md) follows one task from brief to approval, including a red gate and a worker that stopped and asked.
 
 ## Limits
 
 - The rules are instructions to the models. The real boundary is the sandbox: nothing of your computer is mounted into a bot's container, a bot's results come back as plain files only (links are skipped), and the container has no root capabilities. `host` mode has no sandbox.
 - What a bot prints and hands back is shown to the lead as data, not as instructions; the lead is told so, but it is still a model reading text a bot wrote.
-- Bots need internet access to reach cloud models; the container network is not filtered by default, so a bot can reach your local network and, on a cloud VM, the provider's metadata service. Block those on the engine's host if that matters.
+- Bots need internet access to reach cloud models; the default `bridge` network is not filtered, so a bot can reach your local network and, on a cloud VM, the provider's metadata service. Block those on the engine's host if that matters, or use `network = egress` to filter the bot's traffic through an allowlist proxy; the run's allowed hosts are shown at its start (see [limits](docs/guide/limits.md)).
 - `.agents/bin/secret` keeps keys out of the repository, the chat and the bots' storage. A process running as your own user could still read its store. Masking keys in a bot's output prevents accidents; it is not a barrier against a bot that wants to leak a key it was given.
 - Known gaps are listed in `docs/DESIGN.md` under "Secrets at the sinks": only key patterns and registered values are recognized, as they stand (a value a bot reflows, splits, encodes or compresses, or one that is neither registered nor key-shaped, passes), a registered multi-line value longer than the stream buffer (400 lines) may pass in streamed output, and a value containing `/` is not masked in a path.
 - The container flow is tested with Docker and a stand-in CLI. The commands for the real agent CLIs and the example connectors in `config.ini` and `.agents/connectors/` follow their documentation; check them against your versions.
+- For a local model, the local-runner (`python3 catalog/tools/local-runner/local_runner.py`) checks a model server that speaks the OpenAI-compatible API and smoke-tests one chat completion; with `network = egress`, `[egress] private` lets a bot reach that one host and port.
+- A whole team run on a local model with tool calls is not tested yet.
+- Gemini CLI gets an adapter file for the lead but is not tested.
 
 ## Catalog
 
@@ -123,4 +138,4 @@ The container tests run when Docker or Podman is reachable. `scripts/install-smo
 
 ## License
 
-Copyright 2026 VAIEV. Licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 VAIEV. Licensed under the [Apache License, Version 2.0](LICENSE). A redistribution, or a work built on WOUF, carries the [NOTICE](NOTICE) file.

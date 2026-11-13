@@ -8,6 +8,7 @@ When a worker returns `ready-for-review` or a flow ends `ready`. Every result is
 
 - The brief and the worker's return block; for code the branch `<team>/<task>` and the repository's CI
 - The review bot
+- For the receipt: `[federation] name` and `signing_key` in `team/config.ini` (`skills/setup.md`)
 
 Approval: the review needs none. Merging to main, publishing or sending the result needs the human's yes.
 
@@ -15,19 +16,21 @@ Approval: the review needs none. Merging to main, publishing or sending the resu
 
 1. A `ready <branch> <commit>` flow of a class with reviews was reviewed on that head already: go to step 4. A class with `reviews = 0` (`decision`, `analysis`, `plan`) ends `ready` unreviewed, which is no APPROVE: review its result by hand before it is sent or relied on, and never merge code whose proposal says `review none`. Otherwise: `.agents/bin/team run review <task> --brief <brief> --repo <team>/<task>` (documents: `--input <files>`), the brief extended by "Review this result against the acceptance criteria above."
 2. `CHANGES`: the blocking items go back to the worker as a brief section, run again with `--repo <team>/<task>` so its commits continue the branch, then review again. After three rounds ask the human.
-3. `APPROVE <sha>` counts only for the branch head (`git rev-parse <team>/<task>`); a newer commit needs a new review.
+3. `APPROVE <sha>` counts only for the branch head (`git rev-parse <team>/<task>`); a newer commit needs a new review. A reviewer refuses APPROVE on a main-bound series package K < N (its brief says `Series: NAME K/N`): a series lands on a feature branch, then as one complete change.
 4. `team merge propose <task> --head <sha>` records head, branch and verdict (never merges), after checking that the branch still points at that head and every required review approved it. Without a flow it takes the last `team run review <task>` of step 1 when it approved the current head of its branch and the task's class needs one review; a class with two (`security`) needs a flow. Push the branch or open a pull request: CI must be green on that commit. A repository with no CI: tell the human so; the review's test run is then the only check.
 5. Ask the human: what changed, verdict, CI, residual risk; `team merge mark <task> --head <sha>` flags it for them. On yes: merge the way the repository merges, never by force.
-6. `team task done <task>`; one log line.
+6. After the landing, once the team has a signing key: `team receipt make <task> --reviewed <H> --landed <L> --pr <N>` (H the approved head, L the commit on main, N the pull request; leave out `--pr` without one). It needs a green gate on H (the flow's, else `team gate`), the approvals the class requires, the flow's `brief.md` or `--brief FILE`, L on the local `refs/heads/main` (pull main first) as H itself or a squash of H on its base, and a git user name and email for the note. It writes `team/receipts/<L>.json`, the `receipt.signed` event and the note `refs/notes/wouf-receipts` on L, and pushes nothing: pushing the note is a push like any other. Run again, it adds only a missing part. When it refuses (`receipt <task>: refused: <why>`), the merge stays; put the reason into the task (step 7, `--reason "no receipt: <why>"`), never edit a record to make it pass.
+7. `team task done <task>`; one log line.
 
 ## How to validate the result
 
 - The APPROVE names the merged commit; CI is green on it; the human said yes.
 - The reviewer was not the worker and did not change the result.
+- With a signing key: `team receipt make` printed `receipt <L>: stored team/receipts/<L>.json, …` (or `unchanged`), or the task names why there is none.
 
 ## What to return
 
-- The merge or the delivered result, the task `done`; if blocked: the blocking items and who acts next
+- The merge or the delivered result, the receipt (or why there is none), the task `done`; if blocked: the blocking items and who acts next
 
 ## What requires approval
 

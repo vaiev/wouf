@@ -7,16 +7,15 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import os
 import sys
 import tempfile
 import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env, wouf_env  # noqa: E402
 from test_engine_calls import FAKE_ENGINE, MARKER  # noqa: E402
 from test_flow_parts import team_module as flow_module  # noqa: E402
 from test_team_cli import KEY, Project  # noqa: E402
@@ -43,6 +42,11 @@ def today(**delta) -> datetime:
     return start + timedelta(minutes=1, **delta)
 
 
+def setUpModule() -> None:
+    # No test of this module sees a WOUF_* of the caller; a test's own wouf_env(...) adds what it sets.
+    isolate_wouf_env()
+
+
 class TokensTodayTest(unittest.TestCase):
     """The day's sum from the lead's receipts: today's (UTC) only, per bot by the signal's first word."""
 
@@ -51,7 +55,7 @@ class TokensTodayTest(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.team = Path(tmp.name)
         (self.team / "logs").mkdir()
-        env = patch.dict(os.environ, WOUF_TEAM_DIR=str(self.team))
+        env = wouf_env(WOUF_TEAM_DIR=str(self.team))
         env.start()
         self.addCleanup(env.stop)
 
@@ -246,7 +250,7 @@ class BudgetRunTest(unittest.TestCase):
 
 
 def stats_bots(team: Path) -> list:
-    with patch.dict(os.environ, WOUF_TEAM_DIR=str(team)):
+    with wouf_env(WOUF_TEAM_DIR=str(team)):
         return stats.bot_runs(None)
 
 
@@ -290,7 +294,7 @@ class BudgetFlowTest(unittest.TestCase):
         self.assertEqual(self.next(steps), {"end": "blocked", "why": "over the per-run budget"})
 
     def test_the_step_takes_the_mark_and_the_reason_from_the_result(self) -> None:
-        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, WOUF_TEAM_DIR=folder):
+        with tempfile.TemporaryDirectory() as folder, wouf_env(WOUF_TEAM_DIR=folder):
             module = self.team
             module.record = lambda *a, **k: None
             module.subprocess = type("NoRun", (), {"run": staticmethod(lambda *a, **k: None), "STDOUT": None})
@@ -347,7 +351,7 @@ class BudgetStatsTest(unittest.TestCase):
         self.team, self.transcripts = root / "team", root / "transcripts"
         for folder in (self.team / "logs", self.transcripts, root / "events"):
             folder.mkdir(parents=True)
-        env = patch.dict(os.environ, WOUF_TEAM_DIR=str(self.team), WOUF_EVENTS_DIR=str(root / "events"))
+        env = wouf_env(WOUF_TEAM_DIR=str(self.team), WOUF_EVENTS_DIR=str(root / "events"))
         env.start()
         self.addCleanup(env.stop)
         (self.team / "logs" / "lead.jsonl").write_text(

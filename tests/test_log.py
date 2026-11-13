@@ -13,6 +13,9 @@ import unittest
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from support import isolate_wouf_env  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 LOG = ROOT / ".agents" / "bin" / "log"
@@ -82,6 +85,10 @@ NON_HITS = [
 ]
 
 
+def setUpModule() -> None:
+    isolate_wouf_env()
+
+
 class LogTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -90,6 +97,92 @@ class LogTest(unittest.TestCase):
         self.env = {**os.environ, "WOUF_LOG_DIR": str(self.dir), "WOUF_SECRET_DIR": str(self.store),
                     "WOUF_SECRET_BACKEND": "file"}
         self.env.pop("WOUF_MASK", None)
+
+    def test_task_timeline_rounds_prefixes_and_empty(self) -> None:
+        for task in ("T-1", "T-1.r1", "T-12", "T-0156", "T-01567"):
+            self.add("lead", task, "done", task)
+        result = self.log("task", "T-1")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(len(result.stdout.splitlines()), 2)
+        self.assertIn("T-1.r1", result.stdout)
+        self.assertNotIn("T-12", result.stdout)
+        self.assertNotIn("T-01567", self.log("task", "T-0156").stdout)
+        empty = self.log("task", "missing")
+        self.assertEqual((empty.returncode, empty.stdout), (0, "no lines for missing\n"))
+
+    def test_task_uses_team_dir_without_log_override(self) -> None:
+        team = Path(self.tmp.name) / "team"
+        self.env.pop("WOUF_LOG_DIR")
+        self.env["WOUF_TEAM_DIR"] = str(team)
+        logs = team / "logs"
+        logs.mkdir(parents=True)
+        (logs / "lead.jsonl").write_text(json.dumps({"t": "2026-01-01T00:00:00+00:00", "who": "lead",
+                                                   "task": "T-1", "outcome": "done", "signal": "found"}) + "\n")
+        result = self.log("task", "T-1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("found", result.stdout)
+
+    def test_task_gate_record_uses_team_dir_and_accepts_unfinished(self) -> None:
+        team = Path(self.tmp.name) / "team"
+        self.env["WOUF_TEAM_DIR"] = str(team)
+        folder = team / "env" / "gate" / "T-1"
+        folder.mkdir(parents=True)
+        self.add("lead", "T-1", "done", "receipt")
+        for record in ({"state": "running", "ended": None}, {"state": "running"}, [], "[" * 100000 + "]" * 100000):
+            with self.subTest(record=str(record)[:40]):
+                (folder / "gate.json").write_text(record if isinstance(record, str) else json.dumps(record))
+                result = self.log("task", "T-1")
+                self.assertEqual(result.returncode, 0, result.stderr)  # a record json cannot read is skipped
+                self.assertIn("receipt", result.stdout)
+                self.assertNotIn("Traceback", result.stderr)
+                if isinstance(record, dict):
+                    self.assertIn("running", result.stdout)
+
+    def test_task_timeline_run_event(self) -> None:
+        self.env["WOUF_EVENTS_DIR"] = str(Path(self.tmp.name) / "events")
+        data = json.dumps({"bot": "worker", "runner": "fake", "tier": "strong", "model": "x",
+                           "effort": "medium", "outcome": "started"})
+        event = self.log("event", "add", "run.started", "--actor", "lead", "--task", "T-1", "--data", data)
+        self.assertEqual(event.returncode, 0, event.stderr)
+        self.assertIn("worker", self.log("task", "T-1").stdout)
+
+    def test_task_fix_rounds_and_their_review_rounds(self) -> None:
+        for task in ("T-1", "T-1-fix1", "T-1-fix2.r1", "T-1-fixer", "T-1-fix", "T-1-fix1x", "T-1.r1-fix1", "T-12-fix1"):
+            self.add("lead", task, "done", task)
+        listed = {line.split()[2] for line in self.log("task", "T-1").stdout.splitlines()}
+        self.assertEqual(listed, {"T-1", "T-1-fix1", "T-1-fix2.r1"})
+        self.assertEqual({line.split()[2] for line in self.log("task", "T-1-fix1").stdout.splitlines()}, {"T-1-fix1"})
+
+    def test_task_does_not_read_stage_folders(self) -> None:
+        team = Path(self.tmp.name) / "team"
+        self.env["WOUF_TEAM_DIR"] = str(team)
+        folder = team / "env" / "worker" / "tasks" / "T-1"
+        folder.mkdir(parents=True)
+        (folder / "run.json").write_text(json.dumps({"member": "worker", "task": "T-1"}))
+        (folder / "result.json").write_text(json.dumps({"state": "done", "ended": "2026-01-02"}))
+        self.add("lead", "T-1", "done", "worker returned")
+        self.assertEqual(self.log("task", "T-1").stdout.splitlines()[-1].split()[1:4], ["lead", "T-1", "done"])
+        self.assertEqual(len(self.log("task", "T-1").stdout.splitlines()), 1)
+
+    def test_task_gate_rounds_and_unfinished_order(self) -> None:
+        team = Path(self.tmp.name) / "team"
+        self.env["WOUF_TEAM_DIR"] = str(team)
+        for task, record in (("T-1", {"state": "running", "started": "2026-01-02"}),
+                             ("T-1.r1", {"state": "done", "ended": "2026-01-03"}),
+                             ("T-1.r2", {"state": "running"}), ("T-1.r1x", {"state": "wrong"}),
+                             ("T-12", {"state": "wrong"})):
+            folder = team / "env" / "gate" / task
+            folder.mkdir(parents=True)
+            (folder / "gate.json").write_text(json.dumps(record))
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / "lead.jsonl").write_text(json.dumps({"t": "2026-01-01", "who": "lead", "task": "T-1",
+                                                         "outcome": "done", "signal": "first"}) + "\n")
+        lines = self.log("task", "T-1").stdout.splitlines()
+        self.assertEqual(len(lines), 4)
+        self.assertIn("first", lines[0])
+        self.assertIn("running", lines[1])
+        self.assertIn("T-1.r1", lines[2])
+        self.assertIn("T-1.r2", lines[3])
 
     def store_secret(self, name: str, value: str) -> None:
         self.store.mkdir(mode=0o700, exist_ok=True)
@@ -578,6 +671,94 @@ class SafeJsonTest(unittest.TestCase):
                         log.cmd_ask(['needle', '--json'])
                     json.loads(output.getvalue())
                     self.assertNotIn(value, output.getvalue())
+
+
+class ReceiptEventTest(unittest.TestCase):
+    """receipt.signed and receipt.resigned (docs/RECEIPTS.md): exactly task, landed, reviewed and sha256."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.events = Path(tmp.name) / "events"
+        env = patch.dict(os.environ, WOUF_EVENTS_DIR=str(self.events), WOUF_LOG_DIR=str(Path(tmp.name) / "logs"),
+                         WOUF_MASK="[]")
+        env.start()
+        self.addCleanup(env.stop)
+        self.log = helper(LOG)
+
+    @staticmethod
+    def data(**changes) -> dict:
+        data = {"task": "T-1", "landed": "a" * 40, "reviewed": "b" * 40, "sha256": "c" * 64, **changes}
+        return {k: v for k, v in data.items() if v is not ...}
+
+    def lines(self) -> list[bytes]:
+        return [line for path in self.events.glob("*.jsonl") for line in path.read_bytes().splitlines()]
+
+    def test_both_kinds_take_exactly_their_four_keys(self) -> None:
+        for kind in ("receipt.signed", "receipt.resigned"):
+            event = self.log.event_append(kind, "lead", "T-1", self.data())
+            self.assertEqual(event["data"], self.data())
+        done = subprocess.run([sys.executable, str(LOG), "event", "add", "receipt.signed", "--actor", "lead",
+                               "--task", "T-1", "--data", json.dumps(self.data(landed="0" * 40))],
+                              capture_output=True, text=True, timeout=20)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        events, bad = self.log.event_read(next(self.events.glob("*.jsonl")))
+        self.assertEqual(([e["kind"] for e in events], bad), (["receipt.signed", "receipt.resigned",
+                                                               "receipt.signed"], 0))
+
+    def test_other_keys_and_values_that_are_not_hex_are_refused(self) -> None:
+        bad = [self.data(task=...), self.data(landed=...), self.data(reviewed=...), self.data(sha256=...),
+               self.data(head="a" * 40), self.data(sig="x"), {}]
+        for key, size in (("landed", 40), ("reviewed", 40), ("sha256", 64)):
+            bad += [self.data(**{key: value}) for value in ("a" * (size - 1), "a" * (size + 1), "A" * size,
+                                                              "g" * size, " " + "a" * (size - 1), 1, None,
+                                                              ["a" * size], "a" * (104 - size))]
+        bad += [self.data(task="../x"), self.data(task=1), self.data(task="")]
+        for kind in ("receipt.signed", "receipt.resigned"):
+            for data in bad:
+                with self.subTest(kind=kind, data=data), self.assertRaises(SystemExit):
+                    self.log.event_append(kind, "lead", "T-1", data)
+        self.assertEqual(self.lines(), [])
+        done = subprocess.run([sys.executable, str(LOG), "event", "add", "receipt.resigned", "--actor", "lead",
+                               "--task", "T-1", "--data", json.dumps(self.data(extra="a" * 40))],
+                              capture_output=True, text=True, timeout=20)
+        self.assertNotEqual(done.returncode, 0)
+        self.assertEqual(self.lines(), [])
+
+    def test_a_stored_receipt_event_with_another_key_is_malformed_when_read(self) -> None:
+        self.log.event_append("receipt.signed", "lead", "T-1", self.data())
+        path = next(self.events.glob("*.jsonl"))
+        event = json.loads(path.read_bytes())
+        event.update(seq=2, id=f"{event['origin']}-2", data={**event["data"], "branch": "main"})
+        with path.open("a") as handle:
+            handle.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
+        events, bad = self.log.event_read(path)
+        self.assertEqual((len(events), bad), (1, 1))
+        with self.assertRaises(ValueError):
+            self.log.event_validate("receipt.signed", "lead", "T-1", self.data(sha256="c" * 40), "local")
+
+
+    def test_a_gate_flow_step_takes_a_head_and_base_only_as_hex(self) -> None:
+        # attest.flow_gate binds a gate to its head through these keys: only a commit id is written or read back.
+        sha1, sha256 = "a" * 40, "b" * 64
+        for data in ({"kind": "gate", "status": "green", "head": sha1, "base": sha1},
+                     {"kind": "gate", "status": "green", "head": sha256, "base": sha256},
+                     {"kind": "gate", "status": "green", "head": sha1}, {"kind": "gate", "status": "green"}):
+            self.assertEqual(self.log.event_append("flow.step", "lead", "T-1", data)["data"], data)
+        for key in ("head", "base"):
+            for value in ("a" * 39, "a" * 41, "a" * 63, "A" * 40, "g" * 40, " " + "a" * 39, "unknown", "", 1,
+                          None, ["a" * 40]):
+                with self.subTest(key=key, value=value), self.assertRaises(SystemExit):
+                    self.log.event_append("flow.step", "lead", "T-1", {"kind": "gate", "status": "green",
+                                                                       key: value})
+        self.assertEqual(len(self.lines()), 4)
+        path = next(self.events.glob("*.jsonl"))
+        event = json.loads(path.read_bytes().splitlines()[-1])
+        event.update(seq=5, id=f"{event['origin']}-5", data={**event["data"], "head": "HEAD"})
+        with path.open("a") as handle:
+            handle.write(json.dumps(event, ensure_ascii=True, separators=(",", ":")) + "\n")
+        events, bad = self.log.event_read(path)
+        self.assertEqual((len(events), bad), (4, 1))
 
 
 if __name__ == "__main__":

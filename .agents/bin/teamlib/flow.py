@@ -3,12 +3,13 @@ the command flow."""
 
 from __future__ import annotations
 
+import ipaddress
 import threading
 
 from teamlib.core import *  # noqa: F401,F403
 from teamlib import engine
 from teamlib.engine import TIERS, egress_allows, egress_base, egress_hosts, egress_needs, login_check, mode, uses_login
-from teamlib.gate import GATE_LINES
+from teamlib.gate import GATE_LINES, evidence
 from teamlib.run import (LAUNCH, STAGED, STORE, TEAM, block_items, check_ref_conflict, check_task, commits,
                          masked_lines, record, return_block, shown, split_repo, stage_of)
 
@@ -17,13 +18,19 @@ from teamlib.run import (LAUNCH, STAGED, STORE, TEAM, block_items, check_ref_con
 
 # What a task class means when the team's config.ini has no [class.<name>] section for it. Models stay tiers.
 CLASS_DEFAULTS = {
-    "mechanical": {"bot": "worker", "tier": "light", "effort": "low", "reviews": "1", "scout": "no"},
-    "standard": {"bot": "worker", "tier": "strong", "effort": "medium", "reviews": "1", "scout": "no"},
-    "complex": {"bot": "worker", "tier": "strong", "effort": "high", "reviews": "1", "scout": "yes"},
-    "security": {"bot": "worker", "tier": "strong", "effort": "high", "reviews": "2", "scout": "yes"},
-    "decision": {"bot": "decide", "tier": "strong", "effort": "high", "reviews": "0", "scout": "no"},
-    "analysis": {"bot": "worker", "tier": "strong", "effort": "medium", "reviews": "0", "scout": "no"},
-    "plan": {"bot": "planner", "tier": "strong", "effort": "high", "reviews": "0", "scout": "yes"},
+    "mechanical": {"bot": "worker", "tier": "light", "effort": "low", "reviews": "1", "scout": "no",
+                   "steps": "worker gate review"},
+    "standard": {"bot": "worker", "tier": "strong", "effort": "medium", "reviews": "1", "scout": "no",
+                 "steps": "worker gate review"},
+    "complex": {"bot": "worker", "tier": "strong", "effort": "high", "reviews": "1", "scout": "yes",
+                "steps": "scout worker gate review"},
+    "security": {"bot": "worker", "tier": "strong", "effort": "high", "reviews": "2", "scout": "yes",
+                 "steps": "scout worker gate review*2"},
+    "decision": {"bot": "decide", "tier": "strong", "effort": "high", "reviews": "0", "scout": "no", "steps": "worker"},
+    "analysis": {"bot": "worker", "tier": "strong", "effort": "medium", "reviews": "0", "scout": "no",
+                 "steps": "worker"},
+    "plan": {"bot": "planner", "tier": "strong", "effort": "high", "reviews": "0", "scout": "yes",
+             "steps": "scout worker"},
 }
 
 # Classes that never run below strong (review runs on strong too: step_tier).
@@ -83,7 +90,7 @@ def load_plan(plan_dir: Path) -> list[dict]:
         break
     if not rows:
         raise ValueError("the plan needs a nonempty package table: ID, Wave, Runner, Depends")
-    found, ids, tasks = [], set(), set()
+    found, ids, tasks, classes = [], set(), set(), known_classes()
     for row in rows:
         pid = row["id"]
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", pid):
@@ -112,9 +119,10 @@ def load_plan(plan_dir: Path) -> list[dict]:
         for name in required + (("Threat model",) if fields.get("Class", "").lower() == "security" else ()):
             if not fields.get(name):
                 raise ValueError(f"package {pid}: the brief needs {name} (non-empty)")
-        if fields["Class"].lower() not in CLASSES or fields["Class"].lower() == "plan":
-            raise ValueError(f"package {pid}: Class must be an executable package class")
-        header = brief_header(text)
+        if fields["Class"].lower() not in classes or fields["Class"].lower() == "plan":
+            raise ValueError(f"package {pid}: Class must be an executable package class, one of "
+                             f"{', '.join(c for c in classes if c != 'plan')}")
+        header = brief_header(text, classes)
         if not header["paths"]:
             raise ValueError(f"package {pid}: Paths must name at least one repository-relative scope")
         task = header["task"]
@@ -145,26 +153,97 @@ def load_plan(plan_dir: Path) -> list[dict]:
 
 def class_options(ini, name: str) -> dict:
     """Bot, runner, tier, model, effort, number of reviews and review runners for a task class."""
-    if name not in CLASSES:
+    if name not in known_classes(ini):
         die(f"unknown class {name!r}")
-    merged = {**CLASS_DEFAULTS[name], **{k: v.strip() for k, v in (ini[f"class.{name}"].items()
-                                                                     if ini.has_section(f"class.{name}") else [])}}
+    # A configured class (a [class.<name>] outside CLASS_DEFAULTS): worker, 1 review, no scout; no default tier.
+    section = {k: v.strip() for k, v in (ini[f"class.{name}"].items() if ini.has_section(f"class.{name}") else [])}
+    merged = {**CLASS_DEFAULTS.get(name, {"bot": "worker", "reviews": "1", "scout": "no"}), **section}
+    if name not in CLASS_DEFAULTS and not merged.get("tier"):
+        die(f"[class.{name}] tier is missing: a configured class names its tier (light, mid or strong)")
+    if merged.get("tier") not in TIERS:
+        die(f"[class.{name}] tier must be light, mid or strong")
+    if name in STRONG_CLASSES and merged["tier"] != "strong":
+        die(f"[class.{name}] runs on strong, never lower")
+    check_member(merged.get("bot") or "worker")
+    steps, rounds = class_table(name, merged, section)
+    return {"bot": merged.get("bot") or "worker", "runner": merged.get("runner") or None, "tier": merged["tier"],
+            "model": merged.get("model") or None, "effort": merged.get("effort") or None,
+            "reviews": table_reviews(steps), "review_runners": words(merged.get("review_runners", "")),
+            "scout": any(st["kind"] == "scout" for st in steps), "steps": steps, "rounds": rounds}
+
+
+def class_table(name: str, merged: dict, section: dict) -> tuple[list, int]:
+    """A class's steps table and review rounds. steps, when the section sets it (even empty), wins: the old keys
+    scout and reviews are then ignored. Otherwise they render into the table when set or when there is no table."""
+    if "steps" in section:
+        text = section["steps"]
+    elif "reviews" in section or "scout" in section or not merged.get("steps"):
+        text = legacy_steps(name, merged)
+    else:
+        text = merged["steps"]
+    steps = parse_steps(text, name)
+    rounds = merged.get("rounds") or str(FLOW_ROUNDS)
+    if not re.fullmatch(r"[1-5]", rounds):
+        die(f"[class.{name}] rounds must be 1 to 5 (review rounds with CHANGES before the flow is blocked)")
+    return steps, int(rounds)
+
+
+def legacy_steps(name: str, merged: dict) -> str:
+    """The steps table of the old keys: scout (yes/no) and reviews (0-3)."""
     try:
         reviews = int(merged.get("reviews", "1"))
     except ValueError:
         reviews = -1
     if not 0 <= reviews <= 3:
         die(f"[class.{name}] reviews must be 0 to 3")
-    if merged.get("tier") not in TIERS:
-        die(f"[class.{name}] tier must be light, mid or strong")
-    if name in STRONG_CLASSES and merged["tier"] != "strong":
-        die(f"[class.{name}] runs on strong, never lower")
     if merged.get("scout") not in ("yes", "no"):
         die(f"[class.{name}] scout must be yes or no")
-    check_member(merged.get("bot") or "worker")
-    return {"bot": merged.get("bot") or "worker", "runner": merged.get("runner") or None, "tier": merged["tier"],
-            "model": merged.get("model") or None, "effort": merged.get("effort") or None, "reviews": reviews,
-            "review_runners": words(merged.get("review_runners", "")), "scout": merged["scout"] == "yes"}
+    return render_steps(merged["scout"] == "yes", reviews)
+
+
+def render_steps(scout: bool, reviews: int) -> str:
+    """The steps table text of scout (yes/no) and reviews (0-3)."""
+    return " ".join(["scout"] * scout + ["worker"] + ["gate", f"review*{reviews}"] * (reviews > 0))
+
+
+def parse_steps(text: str, name: str) -> list:
+    """A class's steps table, [{"kind", "count"}, ...]: preflight* worker [gate review[*N]], N 1 to 3; the
+    preflights are scout and research. Anything else dies naming [class.<name>] steps."""
+    where, steps, seen = f"[class.{name}] steps", [], []
+    for token in text.split():
+        found = re.fullmatch(r"(scout|research|worker|gate)|review(?:\*([0-9]+))?", token)
+        if not found:
+            die(f"{where}: unknown step {token!r}; the steps are scout, research, worker, gate, review, review*N")
+        kind, count = found.group(1) or "review", int(found.group(2) or 1)
+        problem = step_problem(kind, count, seen)
+        if problem:
+            die(f"{where}: {problem}")
+        seen.append(kind)
+        steps.append({"kind": kind, "count": count})
+    if "worker" not in seen:
+        die(f"{where} needs one worker")
+    if "gate" in seen and "review" not in seen:
+        die(f"{where}: gate without review; a gate is followed by its reviews")
+    return steps
+
+
+def step_problem(kind: str, count: int, seen: list) -> str:
+    """Why one step cannot follow the steps seen so far; empty when it can."""
+    if kind in seen:
+        return f"{kind} twice"
+    if kind in PREFLIGHT and "worker" in seen:
+        return f"{kind} after the worker; scout and research come before it"
+    if kind == "gate" and "worker" not in seen:
+        return "gate before the worker"
+    if kind == "review" and "gate" not in seen:
+        return "review without a gate before it"
+    if not 1 <= count <= 3:
+        return f"review*{count}: 1 to 3 reviews"
+    return ""
+
+
+def table_reviews(steps: list) -> int:
+    return sum(st["count"] for st in steps if st["kind"] == "review")
 
 
 def review_verdict(lines: list[str], name: str, task: str, head: str) -> dict:
@@ -241,6 +320,49 @@ def egress_decided(task: str) -> list[str]:
     return hosts
 
 
+# [egress] private: the host:port pairs a run may reach through the proxy although they are private (a model server
+# on this computer). The rule is the proxy tool's (parse_private in egress_proxy.py), written again here because the
+# proxy imports nothing of the pack, and the two must agree: a literal loopback, RFC 1918 or unique-local address
+# ([v6] in brackets) or the container host alias, and one decimal port. The networks are built from integers so the
+# leak scan of tests/test_pack.py finds no literal. Nothing here touches the bot's own-loopback variables.
+PRIVATE_NETS = (ipaddress.IPv4Network((0x7F000000, 8)), ipaddress.IPv6Network(("::1", 128)),
+                ipaddress.IPv4Network((0x0A000000, 8)), ipaddress.IPv4Network((0xAC100000, 12)),
+                ipaddress.IPv4Network((0xC0A80000, 16)), ipaddress.IPv6Network(("fc00::", 7)))
+HOST_ALIASES = ("host.docker.internal", "host.containers.internal")
+PRIVATE_PORT = re.compile(r"[1-9][0-9]{0,4}", re.ASCII)
+
+
+def egress_pair(raw: str, where_from: str) -> str:
+    """The canonical host:port of one [egress] private entry; anything else (a name, a wildcard, a range, a
+    network, a public, link-local or CGNAT address, a URL) stops here, so a typo never opens more than one port."""
+    host, sep, port = raw.lower().rpartition(":")
+    if host.endswith(".") and host[:-1] in HOST_ALIASES:  # a trailing dot only on a name, never on a literal
+        host = host[:-1]
+    what = (f"host:port with a literal loopback or private address or {' or '.join(HOST_ALIASES)} and one port "
+            "1-65535 (no name, wildcard, range, network or URL)")
+    if not sep or not PRIVATE_PORT.fullmatch(port) or int(port) > 65535:
+        die(f"{where_from}: {visible(raw)!r} is not {what}")
+    if host in HOST_ALIASES:
+        return f"{host}:{port}"
+    bracketed = host.startswith("[") and host.endswith("]")
+    try:
+        ip = ipaddress.IPv6Address(host[1:-1]) if bracketed else ipaddress.IPv4Address(host)
+    except ValueError:
+        die(f"{where_from}: {visible(raw)!r} is not {what}")
+    # No unwrapping: an IPv6 literal must be ::1 or unique-local itself; a mapped (::ffff:a.b.c.d), compatible
+    # (::a.b.c.d), NAT64 or 6to4 form of a private IPv4 address is refused, as the proxy refuses it.
+    if not any(ip in net for net in PRIVATE_NETS):
+        die(f"{where_from}: {visible(raw)!r} is not a loopback or private address (10/8, 172.16/12, 192.168/16, "
+            "::1, fc00::/7); a public, link-local or CGNAT address, or an IPv4 address embedded in IPv6, is refused")
+    return f"[{ip.compressed}]:{port}" if bracketed else f"{ip}:{port}"
+
+
+def egress_private(ini) -> list[str]:
+    """The private pairs of [egress] private, canonical and without doubles; empty by default."""
+    pairs = [egress_pair(raw, "[egress] private in team/config.ini") for raw in words(get(ini, "egress", "private"))]
+    return list(dict.fromkeys(pairs))
+
+
 def prepare_egress(ini, o: dict, decl: dict, current: str, runner: str) -> dict:
     """The allowlist of a run under network = egress, before anything is staged: [egress] allow, the base of every
     run, plus the model hosts of this run's runner ([egress] needs.<runner>, else the built-in list of its CLI), plus
@@ -251,6 +373,7 @@ def prepare_egress(ini, o: dict, decl: dict, current: str, runner: str) -> dict:
             "set [environment] network = bridge for host mode")
     base = egress_base(ini)
     needs = egress_needs(ini, runner)
+    private = egress_private(ini)  # refused here, before any engine call, when an entry is not a literal pair
     if not needs:
         say(f"team: egress: {runner} has no model hosts (no [egress] needs.{runner} and no built-in list for its "
             f"CLI); set [egress] needs.{runner}, or the bot cannot reach its model", err=True)
@@ -268,12 +391,15 @@ def prepare_egress(ini, o: dict, decl: dict, current: str, runner: str) -> dict:
             f"--authority lead --options yes no --why ... --risk ..., or drop the host from the brief")
     allow = own + [h for h in extra if h not in own]
     say(f"team: egress: the list of this run ({runner}): {' '.join(allow) or 'nothing but the proxy'}", err=True)
+    if private:  # every run that uses the exception says so at start
+        say(f"team: egress: private host:port of this run ({runner}): {' '.join(private)}; the proxy lets exactly "
+            "these through ([egress] private) and refuses every other private address", err=True)
     proxy = get(ini, "egress", "proxy")
     source = (PROJECT / proxy).resolve() if proxy else None
     if source is None or not source.is_file():
         die("network = egress needs the egress proxy: copy egress_proxy.py of the egress-proxy tool in the catalog "
             "into this project and name its path in [egress] proxy")
-    return {"allow": allow, "source": str(source)}
+    return {"allow": allow, "private": private, "source": str(source)}
 
 
 def preflight_scout(header: dict) -> bool | None:
@@ -294,13 +420,16 @@ PREFLIGHT = ("scout", "research")
 
 def flow_next(flow: dict, opts: dict, fallbacks: dict, at: str) -> dict | list:
     """The next step of a flow from the steps so far, without side effects: {"do": kind, ...}, a list of such steps
-    that run at once (each on its own bot), or {"end": ready | blocked | limited | question, ...}. opts are the
-    task's class options; opts["research"] (run the research bot) and opts["review2"] (the second reviewer's bot,
-    when it is active) are optional."""
+    that run at once (each on its own bot), or {"end": ready | blocked | limited | question, ...}. It walks the
+    class's opts["steps"] (without it, the table of opts["scout"] and opts["reviews"]); opts["research"] (run the
+    research bot) and opts["review2"] (the second reviewer's bot, when it is active) are optional."""
+    table = opts.get("steps") or parse_steps(render_steps(opts["scout"], opts["reviews"]), "?")
+    opts = {**opts, "steps": table, "reviews": table_reviews(table)}
+    chain = flow_chain(opts)
     steps = flow.get("steps", [])
     if not steps:
-        first = [{"do": kind} for kind, on in (("scout", opts["scout"]), ("research", opts.get("research"))) if on]
-        return first if len(first) > 1 else first[0] if first else {"do": "worker"}
+        first = [{"do": kind} for kind in chain if kind in PREFLIGHT] or [enter(chain[0], opts)]
+        return first if len(first) > 1 else first[0]
     last = steps[-1]
     kind, outcome = last["kind"], last.get("outcome")
     if any(st.get("over_budget") for st in steps):
@@ -313,9 +442,9 @@ def flow_next(flow: dict, opts: dict, fallbacks: dict, at: str) -> dict | list:
         known = [st["until"] for st in waiting if st.get("until")]
         return {"end": "limited", "until": max(known) if len(known) == len(waiting) else None,
                 "why": waiting[-1].get("why")}
-    if kind in PREFLIGHT and last.get("group") is not None:
-        # Scout and research ran at once: whatever they gave, the worker goes on with it.
-        return {"do": "worker"}
+    if kind in PREFLIGHT and (last.get("group") is not None or kind not in chain):
+        # Scout and research ran at once, or a preflight the table does not have: the worker goes on.
+        return enter(after(chain, kind), opts)
     if kind == "review" and last.get("parallel"):
         return parallel_reviews_next(flow, opts, fallbacks, at)
 
@@ -326,7 +455,7 @@ def flow_next(flow: dict, opts: dict, fallbacks: dict, at: str) -> dict | list:
         return {**step, **change}
 
     if outcome == "skipped":
-        return {"do": "worker"} if kind in PREFLIGHT else again()
+        return enter(after(chain, kind), opts) if kind in PREFLIGHT else again()
     if outcome == "limited" or (outcome in ("failed", "timeout") and last.get("fallback")):
         nxt = after_limit(steps, fallbacks, at, again)
         if nxt is not None:
@@ -334,40 +463,73 @@ def flow_next(flow: dict, opts: dict, fallbacks: dict, at: str) -> dict | list:
     if outcome == "stopped":
         return {"end": "blocked", "why": f"the {kind} run was stopped"}
     if outcome in ("failed", "timeout") and kind in PREFLIGHT:
-        return {"do": "worker"}
+        return enter(after(chain, kind), opts)
     if outcome in ("failed", "timeout"):
         if len(steps) > 1 and steps[-2]["kind"] == kind and steps[-2].get("outcome") in ("failed", "timeout"):
             return {"end": "blocked", "why": f"the {kind} run failed twice ({outcome})"}
         return again(tier="strong") if kind != "review" else again()
+    return STEP_HANDLERS[kind](flow, last, chain, opts, again)
 
-    if kind in PREFLIGHT:
-        return {"do": "worker"}
-    if kind in ("worker", "bugfixer"):
-        if last.get("status") == "answered":
-            return {"do": kind}
-        if last.get("status") == "questions":
-            return {"end": "question", "why": last.get("questions") or "the worker has questions"}
-        if last.get("status") == "blocked":
-            return {"end": "blocked", "why": last.get("why") or f"the {kind} reports blocked"}
-        if opts["reviews"] == 0:
-            return {"end": "ready"}
-        if not last.get("head"):
-            return {"end": "blocked", "why": f"the {kind} made no commits"}
-        # A rework without new commits ("nothing to change") goes to the gate again; the gate and the review
-        # rounds bound it.
-        return {"do": "gate"}
-    if kind == "gate":
-        # Reviews start only here, after a green gate: never on a head the gate has not passed.
-        if outcome == "green":
-            return first_reviews(opts)
-        if sum(1 for st in steps if st["kind"] == "gate" and st.get("outcome") == "red") >= 2:
-            return {"end": "blocked", "why": "the gate was red twice"}
-        return {"do": "worker", "tier": "strong", "after": "gate"}
-    # A review.
+
+def flow_chain(opts: dict) -> list:
+    """The kinds a flow walks: the preflights switched on for this run (scout by opts["scout"], the table's or the
+    brief's choice; research by opts["research"], a brief's Research: yes), then the table's worker, gate, review."""
+    switched = [kind for kind in PREFLIGHT if opts.get(kind)]
+    return switched + [st["kind"] for st in opts["steps"] if st["kind"] not in PREFLIGHT]
+
+
+def after(chain: list, kind: str) -> str | None:
+    """The kind that follows kind in the chain (after a preflight: the first step that is none), or None."""
+    rest = ([k for k in chain if k not in PREFLIGHT] if kind in PREFLIGHT else
+            chain[chain.index(kind) + 1:] if kind in chain else [])
+    return rest[0] if rest else None
+
+
+def enter(kind: str | None, opts: dict) -> dict | list:
+    """The act that starts a step of the chain; past its end the flow is ready."""
+    if kind is None:
+        return {"end": "ready"}
+    return first_reviews(opts) if kind == "review" else {"do": kind}
+
+
+def preflight_done(flow: dict, last: dict, chain: list, opts: dict, again) -> dict | list:
+    return enter(after(chain, last["kind"]), opts)
+
+
+def worker_done(flow: dict, last: dict, chain: list, opts: dict, again) -> dict | list:
+    """After the worker (or the bugfixer): questions, blocked, else the next step of the table."""
+    kind = last["kind"]
+    if last.get("status") == "answered":
+        return {"do": kind}
+    if last.get("status") == "questions":
+        return {"end": "question", "why": last.get("questions") or "the worker has questions"}
+    if last.get("status") == "blocked":
+        return {"end": "blocked", "why": last.get("why") or f"the {kind} reports blocked"}
+    nxt = after(chain, "worker")
+    if nxt is None:
+        return {"end": "ready"}
+    if not last.get("head"):
+        return {"end": "blocked", "why": f"the {kind} made no commits"}
+    # A rework without new commits ("nothing to change") goes to the gate again; the gate and the review
+    # rounds bound it.
+    return enter(nxt, opts)
+
+
+def gate_done(flow: dict, last: dict, chain: list, opts: dict, again) -> dict | list:
+    # Reviews start only here, after a green gate: never on a head the gate has not passed.
+    if last.get("outcome") == "green":
+        return enter(after(chain, "gate"), opts)
+    if sum(1 for st in flow["steps"] if st["kind"] == "gate" and st.get("outcome") == "red") >= 2:
+        return {"end": "blocked", "why": "the gate was red twice"}
+    return {"do": "worker", "tier": "strong", "after": "gate"}
+
+
+def review_done(flow: dict, last: dict, chain: list, opts: dict, again) -> dict | list:
+    steps = flow["steps"]
     verdict, index = last.get("verdict"), last.get("index", 1)
     if verdict == "approve":
         if index >= opts["reviews"]:
-            return {"end": "ready"}
+            return enter(after(chain, "review"), opts)
         runners = opts["review_runners"]
         return {"do": "review", "index": index + 1, "runner": runners[index] if len(runners) > index else None}
     if verdict in (None, "stale"):
@@ -376,13 +538,18 @@ def flow_next(flow: dict, opts: dict, fallbacks: dict, at: str) -> dict | list:
                 before.get("verdict", "x") in (None, "stale"):
             return {"end": "blocked", "why": "the review gave no verdict on the head twice"}
         return again()
-    return rework(flow, steps, [last])
+    return rework(flow, steps, [last], opts)
 
 
-def rework(flow: dict, steps: list, found: list) -> dict:
-    """After review changes: blocked after the rounds, else bugs alone to the bugfixer; with any change item the
-    worker takes all of them."""
-    rounds = FLOW_ROUNDS + (1 if flow.get("extra_round") else 0)
+# One transition handler per kind of step; the bugfixer's step is a worker's.
+STEP_HANDLERS = {"scout": preflight_done, "research": preflight_done, "worker": worker_done,
+                 "bugfixer": worker_done, "gate": gate_done, "review": review_done}
+
+
+def rework(flow: dict, steps: list, found: list, opts: dict) -> dict:
+    """After review changes: blocked after the class's rounds, else bugs alone to the bugfixer; with any change item
+    the worker takes all of them."""
+    rounds = opts.get("rounds", FLOW_ROUNDS) + (1 if flow.get("extra_round") else 0)
     if changes_rounds(steps) >= rounds:
         return {"end": "blocked", "why": f"{rounds} review rounds without APPROVE"}
     if any(st.get("bugs") for st in found) and not any(st.get("changes") for st in found):
@@ -434,7 +601,7 @@ def parallel_reviews_next(flow: dict, opts: dict, fallbacks: dict, at: str) -> d
     latest = {st.get("index", 1): st for st in reviews}
     found = [latest[index] for index in sorted(latest)]
     if any(st.get("verdict") == "changes" for st in found):
-        return rework(flow, steps, [st for st in found if st.get("verdict") == "changes"])
+        return rework(flow, steps, [st for st in found if st.get("verdict") == "changes"], opts)
     again, waiting = [], []
     for index in range(1, opts["reviews"] + 1):
         last = latest.get(index)
@@ -522,7 +689,9 @@ def after_limit(steps: list, fallbacks: dict, at: str, again) -> dict | None:
 
 
 FLOW_MAX_STEPS = 24
-FLOW_EXIT = {"ready": 0, "blocked": 1, "limited": 4, "question": 5}
+# Exit 6: closed flows cannot resume; an explicit --brief starts a fresh flow.
+FLOW_EXIT = {"ready": 0, "blocked": 1, "limited": 4, "question": 5, "closed": 6}
+FLOW_END = []  # The flowend leaf registers close and restart handling.
 FLOW_OUTCOME = {"ready": "done", "blocked": "blocked", "limited": "limited", "question": "asked"}
 
 
@@ -698,7 +867,7 @@ def flow_step(ini, flow: dict, act: dict, folder: Path, opts: dict) -> dict:
                            stderr=subprocess.STDOUT)
             state = read_json(env_dir() / "gate" / task / "gate.json")
             step = {"kind": "gate", "outcome": state.get("state", "red"), "head": state.get("head"),
-                    "why": state.get("why", "the gate did not run")}
+                    "why": state.get("why", "the gate did not run"), **evidence("gate_step", state)}
             record([step_event(task, step)])
             return step
         member = act_member(ini, act, opts)
@@ -738,6 +907,8 @@ def flow_step(ini, flow: dict, act: dict, folder: Path, opts: dict) -> dict:
     result, spec = read_json(stage / "result.json"), read_json(stage / "run.json")
     step = {"kind": kind, "bot": member, "task": run_task, "outcome": result.get("state") or "failed",
             "runner": spec.get("runner") or runner, "tier": spec.get("tier") or tier, "until": result.get("until")}
+    # What a receipt needs of the run (teamlib.evidence), read now: the next run of this bot and task deletes it.
+    step.update(evidence("run_record", ini, stage, spec, result, step["runner"]))
     for key in ("index", "after", "fallback", "parallel"):
         if act.get(key):
             step[key] = act[key]
@@ -787,6 +958,9 @@ def step_event(task: str, step: dict) -> tuple:
     data = {"kind": step["kind"], "status": str(status or "failed")}
     if step.get("until"):
         data["until"] = step["until"]
+    if step["kind"] == "gate":  # its head and base bind the gate in the event log (attest.flow_gate)
+        data.update({k: step[k] for k in ("head", "base")
+                     if isinstance(step.get(k), str) and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", step[k])})
     return "flow.step", "lead", task, data
 
 
@@ -805,6 +979,9 @@ def run_flow(ini, task: str) -> int:
     lock = flow_lock(folder, task)
     try:
         flow = read_json(folder / "state.json")
+        if flow.get("status") == "closed":
+            say(f"the flow of {task} is closed")
+            return FLOW_EXIT["closed"]
         flow["pid"] = os.getpid()
         opts = class_options(ini, flow["class"])
         if flow.get("bot"):
@@ -880,6 +1057,7 @@ def run_steps(ini, flow: dict, acts: list, folder: Path, opts: dict) -> list:
                     "why": f"the step did not run ({problem.__class__.__name__})"}
             step.update({key: act[key] for key in ("index", "after", "fallback", "parallel") if act.get(key)})
         step.update(started=started, ended=now())
+        step.update(evidence("never_ran", ini, step, act))  # a bot step that never ran: nothing of a run is known
         if len(acts) > 1:
             step["group"] = len(flow["steps"])
         with (folder / "flow.log").open("a", encoding="utf-8") as log:
@@ -929,26 +1107,36 @@ def flow_line(flow: dict) -> str:
     return f"{status} {doing}".rstrip()
 
 
+def save_flow(folder: Path, state: dict) -> None:
+    if FLOW_END:
+        return FLOW_END[0].write_state(folder, state)
+    write_json(folder / "state.json", state)
+
+
 def cmd_flow(ini, args: list[str]) -> int:
-    opts = {"--brief": None, "--repo": None, "--answer": None, "--bot": None, "--scout": None}
+    opts = {"--brief": None, "--repo": None, "--answer": None, "--bot": None, "--scout": None, "--reason": None}
     flags, positional = set(), []
     it = iter(args)
     for arg in it:
         if arg in opts:
             opts[arg] = next(it, None)
-        elif arg in ("--detach", "--status", "--retry", "--staged"):
+        elif arg in ("--detach", "--status", "--retry", "--staged", "--close"):
             flags.add(arg)
         else:
             positional.append(arg)
     if len(positional) != 1:
         die("usage: team flow TASK [--brief FILE --repo PATH[@REF] [--bot ID] [--scout ID]] [--answer TEXT] [--retry] "
-            "[--detach] [--status] [--staged]")
+            "[--detach] [--status] [--staged] [--close --reason TEXT]")
     task = positional[0]
     check_task(task)
     if "." in task:
         die(f"task {task!r}: letters, digits, _ - only")
     folder = flow_dir(task)
     state = folder / "state.json"
+    if FLOW_END:
+        ended = FLOW_END[0].handle(ini, task, folder, opts, flags)
+        if ended is not None:
+            return ended
     if "--status" in flags:
         flow = read_json(state)
         if not flow:
@@ -992,7 +1180,7 @@ def cmd_flow(ini, args: list[str]) -> int:
         check_ref_conflict(branch, repo_dir)
         folder.mkdir(parents=True, exist_ok=True)
         put(folder / "brief.md", text)
-        write_json(state, {"task": task, "repo": str(repo_dir), "base": start, "branch": branch,
+        save_flow(folder, {"task": task, "repo": str(repo_dir), "base": start, "branch": branch,
                            "class": header["class"], "scout": preflight_scout(header),
                            "research": header["research"], "steps": [], "status": "new", "started": now(),
                            **({"batch": True} if os.environ.get("WOUF_BATCH") else {}),
@@ -1004,7 +1192,7 @@ def cmd_flow(ini, args: list[str]) -> int:
     flow = read_json(state)
     if "--staged" in flags:
         flow["staged"] = True
-        write_json(state, flow)
+        save_flow(folder, flow)
     if opts["--answer"]:
         put(folder / "brief.md", f"\n## Answer from the lead ({now()[:10]})\n\n{opts['--answer']}\n", "a")
         last = flow["steps"][-1] if flow["steps"] else {}
@@ -1013,14 +1201,14 @@ def cmd_flow(ini, args: list[str]) -> int:
             # The worker runs again with the answer in its brief.
             flow["steps"][-1]["status"] = "answered"
             flow["status"] = "answered"
-            write_json(state, flow)
+            save_flow(folder, flow)
         elif flow.get("status") == "blocked" and last.get("kind") == "review" and last.get("verdict") == "changes" \
                 and not flow.get("extra_round") and flow_next(flow, class_options(ini, flow["class"]), {}, now()
                                                               ).get("end") == "blocked":
             # Blocked by the review round limit: the lead's note grants exactly one more fix round.
             flow["extra_round"] = True
             flow["status"] = "answered"
-            write_json(state, flow)
+            save_flow(folder, flow)
             lead_log(task, "started", "flow: one more review round granted by the lead")
     if "--retry" in flags and flow.get("status") == "blocked" and flow["steps"]:
         # The lead fixed what blocked it (a sandbox tool, the gate itself): the last step runs again. Over the
@@ -1030,13 +1218,13 @@ def cmd_flow(ini, args: list[str]) -> int:
                 and not (STAGED and STAGED[0].flow_retry(flow)):
             flow["steps"].pop()
         flow["status"] = "retry"
-        write_json(state, flow)
+        save_flow(folder, flow)
         lead_log(task, "started", "flow retry of the last step")
     if "--retry" in flags and flow.get("status") == "limited" and flow["steps"]:
         for step in flow["steps"]:
             if step.get("outcome") in ("limited", "skipped"):
                 step["until"] = now()
-        write_json(state, flow)
+        save_flow(folder, flow)
     if flow.get("status") in ("ready", "blocked") and not opts["--answer"]:
         say(flow_line(flow))
         return FLOW_EXIT[flow["status"]]

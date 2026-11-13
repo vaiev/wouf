@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
-from teamlib.core import KNOWN, PACK, die, dumps, mask_secrets, say, slug, team_dir, visible
+from teamlib.core import KNOWN, PACK, die, dumps, log_dir, mask_secrets, say, slug, team_dir, visible
 
 USAGE = '  team meta [--since DAYS] [--min N] [--json]\n' \
         '                                      chains of 2 to 5 steps that repeat in the run records, by tokens'
@@ -110,7 +110,7 @@ def receipt_steps():
     """The lead's receipts: a run's end (its cost names tokens; the bot is the signal's first word) or a command the
     lead ran on a task (gate, flow, merge: the signal's first word). Starts and team-wide lines are not steps."""
     steps = []
-    for line in lines_of(team_dir() / 'logs' / 'lead.jsonl'):
+    for line in lines_of(log_dir() / 'lead.jsonl'):
         try:
             entry = json.loads(line)
         except (ValueError, RecursionError):
