@@ -36,7 +36,7 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 
 ### Status
 
-- Version 0.2.0, dated 2026-11-12, is the latest release, guide describes `main`: `CHANGELOG.md::[0.2.0] - 2026-11-12`, `.agents/VERSION`. Publishing a release needs owner approval: `AGENTS.md::Guardrails`. Test not found.
+- Version 0.2.1, dated 2026-11-15, is the latest release, guide describes `main`: `CHANGELOG.md::[0.2.1] - 2026-11-15`, `.agents/VERSION`. Publishing a release needs owner approval: `AGENTS.md::Guardrails`. Test not found.
 
 ## Method
 
@@ -252,9 +252,9 @@ Every factual claim in this guide and in the changelog, grouped by document and 
 
 - Tested with Docker and a stand-in CLI; container tests run when an engine is reachable: `README.md::Limits`, `README.md::Develop`, `CONTRIBUTING.md::Checks`. Skip conditions: `tests/test_team_cli_export.py::ContainerRunTest`, `tests/test_bwrap_isolation.py::BwrapIsolationTest`, `tests/test_bwrap_egress.py::BwrapEgressTest`.
 
-### Version 0.2.0
+### Version 0.2.1
 
-- Dated 2026-11-12, the latest release, guide describes `main`: see Overview, Status; `CHANGELOG.md::[0.2.0] - 2026-11-12`. Test not found.
+- Dated 2026-11-15, the latest release, guide describes `main`: see Overview, Status; `CHANGELOG.md::[0.2.1] - 2026-11-15`. Test not found.
 
 ## Examples
 

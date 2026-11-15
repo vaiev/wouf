@@ -68,6 +68,7 @@ from pathlib import Path
 BRIEF = "brief a bot for this change"
 CANNOT_TELL = "cannot tell where this writes"
 NOT_LISTED = "not on the lead's list: brief a bot"
+SESSION_LINK = "a .. from a session folder reached through a symlink"
 CODE_SUFFIXES = frozenset(".py .pyw .sh .bash .zsh .fish .ps1 .bat .cmd .js .mjs .cjs .ts .tsx .jsx .rb .pl .pm .php "
                           ".lua .go .rs .c .h .cc .cpp .hpp .java .kt .swift .cs .ipynb".split())
 READ_TOOLS = frozenset("Read Grep Glob LS NotebookRead WebFetch WebSearch read_file read_many_files list_directory "
@@ -492,6 +493,30 @@ def entered(folders: list, after: str) -> bool:
     return after in (";", "\n", "") and all(os.path.isdir(p) and os.access(p, os.X_OK) for p in folders)
 
 
+def cd_walk(base: Path, text: str) -> tuple:
+    """A cd to text from base (resolved) as bash reads it, logically: a .. drops the folder name before it (review
+    T-0188.r23). Whether bash ends where the guard resolves it: every folder on the way exists (not missing, not a
+    file, each checked before the .. after it: N2) and the folder as written, normalised, is where it resolves; and
+    whether a folder on the way is a symlink (N3)."""
+    path = Path("/") if os.path.isabs(text) else base
+    there, linked = os.path.isdir(path), False
+    for part in (part for part in text.split("/") if part not in ("", ".")):
+        path = path.parent if part == ".." else path / part
+        there = there and (part == ".." or os.path.isdir(path))
+        linked = linked or os.path.islink(path)
+    joined = os.path.join(base, text)
+    return there and os.path.normpath(joined) == os.path.realpath(joined), linked
+
+
+def cd_way(word: Word, cwds: list) -> tuple:
+    """cd_walk of a cd's folder from each folder the guard tracks, resolved (so a project under a symlink still
+    narrows a plain cd ./docs/notes): whether bash ends where the guard resolves it from every one, and whether the
+    way passes a symlink from any."""
+    text = os.path.expanduser(word.text) if word.tilde else word.text
+    walks = [cd_walk(cwd.resolve(), text) for cwd in cwds]
+    return all(there for there, _ in walks), any(linked for _, linked in walks)
+
+
 class Position:
     """Where a simple command stands in its line, for a cd (brief T-0188-fix13, review T-0188.r21): bash skips a cd
     after || in its and-or list and runs one in a pipeline or in ( ) in a subshell, so the commands after it run in the
@@ -512,7 +537,8 @@ class Position:
     def sure(self, item: Simple) -> bool:
         """Takes the item's leading { and } words; then whether it is a plain cd (its first word) that bash runs in
         this shell for sure before the commands after it: at the start of the line or after ; or && with no || before
-        it, not in a pipeline (no | before or after it) and not inside ( ) or { }; after && only when && follows it."""
+        it, not in a pipeline (no | before or after it) and not inside ( ) or { }; after && only when && follows it;
+        with no redirection (bash does not run a builtin whose redirection fails, review T-0188.r23 N1)."""
         for word in item.words:
             if word.raw not in ("{", "}"):
                 break
@@ -520,7 +546,7 @@ class Position:
                 self.open()
             else:
                 self.close()
-        plain = bool(item.words) and item.words[0].text == "cd"
+        plain = bool(item.words) and item.words[0].text == "cd" and not item.redirects
         joined = item.after == "&&" or not self.anded
         return plain and joined and not (self.saved or self.ored or self.piped) and item.after != "|"
 
@@ -568,7 +594,8 @@ def literals(words: list, what: str) -> None:
     character (a * or ? up front could match a file named like an option)."""
     for word in words:
         if word.dyn or (word.glob and word.text[:1] in "*?[{-"):
-            raise CannotTell(f"{what} {word.raw}: the shell computes it")
+            hint = "" if word.dyn else "; quote the glob"
+            raise CannotTell(f"{what} {word.raw}: the shell computes it{hint}")
 
 
 def shell_code(words: list) -> None:
@@ -777,6 +804,29 @@ def inside(path: Path, folder: Path) -> bool:
     return path == folder or folder in path.parents
 
 
+def shell_pwd(folder: str | Path = os.curdir) -> Path | None:
+    """$PWD where it names folder (the guard's own, or the hook's cwd): bash keeps such a PWD as written, through a
+    symlink too, so a cd of the line starts from that name (reviews T-0196.r4, gap 1, and T-0202.r4, finding 3)."""
+    pwd = os.environ.get("PWD", "")
+    try:
+        return Path(pwd) if os.path.isabs(pwd) and os.path.samefile(pwd, folder) else None
+    except OSError:
+        return None
+
+
+def named_paths(places: list) -> set:
+    """Each place normalised and resolved, case ignored: how the line's mkdir folders are kept and compared."""
+    return {name.casefold() for place in places for name in (os.path.normpath(place), os.path.realpath(place))}
+
+
+def named(value: str, folders, paths: set) -> bool:
+    """Whether a lead_env value names, in one of folders, a path of paths (normalised or resolved), case ignored as on
+    a case-insensitive volume (review T-0196.r4, gap 5)."""
+    names = {path.casefold() for path in paths}
+    joined = [os.path.join(folder, value) for folder in folders] if value else []
+    return any({os.path.normpath(path).casefold(), os.path.realpath(path).casefold()} & names for path in joined)
+
+
 def env_names(text: str) -> set:
     """The names of lead_env (split at commas and blanks). One that ENV_RUNS matches is ignored, with one stderr line
     that names it."""
@@ -844,7 +894,7 @@ class Boundary:
             if kind == "path":
                 return self.check_path(value)
             if kind == "command":
-                return self.check_command(value, Path.cwd())
+                return self.check_command(value, Path.cwd(), shell_pwd())
             return self.check_hook(value)
         except CannotTell as why:
             return f"lead mode: {CANNOT_TELL} ({why}); {BRIEF}"
@@ -910,6 +960,7 @@ class Boundary:
         if word.text == "/dev/null":
             return None
         for place in self.known_places(word, cwds):
+            self.written.update((os.path.normpath(place), os.path.realpath(place)))
             resolved = place.resolve() if follow else place.parent.resolve() / place.name
             if ".git" in resolved.parts:
                 return f"lead mode: {word.text} is in a .git folder, git's own data; {BRIEF}"
@@ -927,7 +978,9 @@ class Boundary:
             return None
         cwd = payload.get("cwd")
         cwd = Path(cwd) if isinstance(cwd, str) and os.path.isabs(cwd) else None
-        why = self.hook_command(tool_input.get("command"), cwd or Path.cwd())
+        folder = cwd or Path.cwd()  # as given: a cwd through a symlink, else a PWD that names it (shell_pwd)
+        given = folder if folder != folder.resolve() else shell_pwd(folder)
+        why = self.hook_command(tool_input.get("command"), folder, given)
         if why:
             return why
         paths = hook_paths(tool_input)
@@ -946,23 +999,29 @@ class Boundary:
             raise CannotTell(f"{raw} is relative and the hook payload has no cwd")
         return self.place_reason(cwd / path, raw)
 
-    def hook_command(self, command, cwd: Path) -> str | None:
+    def hook_command(self, command, cwd: Path, given: Path | None = None) -> str | None:
         """A shell tool's command: a string is a command line; an argv (Codex CLI's form) is the line shlex.join writes
         for it, never unwrapped, so ["bash", "-lc", LINE] cannot tell like bash -lc LINE (review T-0188.r5)."""
         if isinstance(command, str):
-            return self.check_command(command, cwd)
+            return self.check_command(command, cwd, given)
         if not isinstance(command, list):
             return None
         argv = [str(part) for part in command]
-        return self.base_command(" ".join(argv)) or self.check_line(shlex.join(argv), [cwd])
+        return self.base_command(" ".join(argv)) or self.check_line(shlex.join(argv), [cwd], given)
 
     # ------------------------------------------------------------------------------------------------ commands
-    def check_command(self, command: str, cwd: Path) -> str | None:
-        return self.base_command(command) or self.check_line(command, [cwd])
+    def check_command(self, command: str, cwd: Path, given: Path | None = None) -> str | None:
+        return self.base_command(command) or self.check_line(command, [cwd], given)
 
-    def check_line(self, text: str, cwds: list) -> str | None:
-        """Every simple command of a command line, in order, following cd (a subshell's cd stays inside it)."""
-        stack, fallback, where = [], [], Position()
+    def check_line(self, text: str, cwds: list, given: Path | None = None) -> str | None:
+        """Every simple command of a command line, in order, following cd (a subshell's cd stays inside it). written:
+        the paths the line's write targets name so far (env_written); linked: a cd of the line passed a symlink;
+        session_linked: the session's folder as given (the hook's cwd, the shell's PWD) is not where it resolves;
+        made: the folders mkdir makes; values and folders: the lead_env values and every folder the guard tracks,
+        for values_reason at the end of the line."""
+        stack, fallback, where, given = [], [], Position(), given or cwds[0]
+        self.written, self.linked, self.session_linked = set(), False, given != given.resolve()
+        self.made, self.values, self.folders = set(), [], set()
         for item in simple_commands(Lexer(text).run()):
             if item == "(":
                 stack.append((cwds, fallback))
@@ -971,22 +1030,24 @@ class Boundary:
                 cwds, fallback = stack.pop() if stack else (cwds, fallback)
                 where.close()
             else:
+                self.folders.update(cwds)
                 why = self.check_simple(item, cwds)
                 if why:
                     return why
                 cwds, fallback = self.next_cwds(item, cwds, fallback, where.sure(item))
                 where.follow(item)
-        return None
+        return self.values_reason()
 
     def next_cwds(self, item: Simple, cwds: list, fallback: list, sure: bool) -> tuple:
         """The folders the next command may run in, which every reader of the list checks (brief T-0188-fix13). A
         cd that bash runs for sure (Position.sure) narrows them to its folder when && follows it, or ; or a newline
-        and its folder exists (a cd that fails or is skipped leaves the next command in the folder before it); any
-        other cd adds its folder to the old ones. After ;, || or a newline the folders before a cd X && ... come back
-        too."""
+        and its folder exists (a cd that fails or is skipped leaves the next command in the folder before it), and
+        only where bash ends where the guard resolves it (cd_way, review T-0188.r23 N2); any other cd adds its folder
+        to the old ones. After ;, || or a newline the folders before a cd X && ... come back too."""
         _, words = command_words(item.words)
         if words and words[0].text == "cd":
             new = list(dict.fromkeys(p.resolve() for p in self.known_places(words[1], cwds)))
+            sure = sure and cd_way(words[1], cwds)[0]
             if sure and item.after == "&&":
                 return new, fallback + cwds
             cwds = new if sure and entered(new, item.after) else cwds + new
@@ -1038,9 +1099,25 @@ class Boundary:
         name = match.group(1)
         if name not in self.env_names:
             raise NotListed(f"the variable {name} (lead_env)")
+        self.env_written(word, word.text[match.end():], cwds)
         if match.group(0).endswith("+=") or not env_value(word, match.end(), cwds):
             raise NotListed(f"the value of {name} (lead_env: $(pass show ENTRY) or a short literal that cannot "
                             "name a path)")
+
+    def env_written(self, word: Word, value: str, cwds: list) -> None:
+        """A lead_env value that names, in a folder the guard tracks there, a path the line writes before it (review
+        T-0188.r23 N4), case ignored (named): env_value_ok sees the folders as they are before the line runs, so it
+        cannot tell. values_reason checks it again at the end of the line."""
+        self.values.append((word, value))
+        if named(value, cwds, self.written):
+            raise CannotTell(f"{word.raw}: the line writes {value} before this value names it")
+
+    def values_reason(self) -> None:
+        """A lead_env value that names, in any folder the guard tracks in the line, a path the line writes anywhere,
+        also after the value (review T-0196.r4, gap 2), case ignored (named)."""
+        for word, value in self.values:
+            if named(value, self.folders, self.written):
+                raise CannotTell(f"{word.raw}: the line writes {value}, which this value names")
 
     # ------------------------------------------------------------------------------------------------ shapes
     def shapes(self) -> dict:
@@ -1110,6 +1187,7 @@ class Boundary:
             raise NotListed("cd without one folder")
         exact(words[1], "cd")
         places = self.known_places(words[1], cwds)
+        self.cd_links(words[1], cwds)
         cd_folder(words[1])
         for place in places:
             target = place.resolve()
@@ -1117,15 +1195,35 @@ class Boundary:
                 return f"lead mode: cd {words[1].text} leaves the project and the write_roots; {BRIEF}"
         return None
 
+    def cd_links(self, word: Word, cwds: list) -> None:
+        """bash's cd is logical, the guard's resolve physical: after a cd through a symlink a .. ends at the parent of
+        the link's name in bash and of its target in the guard (review T-0188.r23 N3). So a cd after a cd of the line
+        that passed a symlink, and one whose folder as written holds .. and passes a symlink, cannot tell; so does one
+        whose folder as written holds .. from a session folder that is not where it resolves (review T-0196.r4, gap
+        1)."""
+        if self.linked:
+            raise CannotTell(f"cd {word.text} after a cd through a symlink, which bash follows by its name")
+        if self.session_linked and ".." in word.text.split("/"):
+            raise CannotTell(f"cd {word.text}: {SESSION_LINK}, which bash follows by its name")
+        self.linked = cd_way(word, cwds)[1]
+        if self.linked and ".." in word.text.split("/"):
+            raise CannotTell(f"cd {word.text}: a .. and a symlink on the way, which bash follows by its name")
+
     def mkdir_reason(self, words: list, cwds: list) -> str | None:
+        """mkdir [-p] DIR...: each DIR a write target. One whose folder as written holds .. cannot tell: mkdir -p makes
+        the folders before the .. too, which the guard does not record (review T-0202.r4, findings 1 and 2)."""
         parents = len(words) > 1 and words[1].text == "-p"
         folders = words[2:] if parents else words[1:]
         if not folders or any(w.text.startswith("-") for w in folders):
             raise NotListed("mkdir with an option other than -p")
         for word in folders:
+            if ".." in word.text.split("/"):
+                raise CannotTell(f"mkdir {word.text}: a .. in the folder as written")
+        for word in folders:
             why = self.target_reason(word, cwds) or (self.parents_reason(word, cwds) if parents else None)
             if why:
                 return why
+            self.made.update(named_paths(self.known_places(word, cwds)))
         return None
 
     def parents_reason(self, word: Word, cwds: list) -> str | None:
@@ -1133,6 +1231,8 @@ class Boundary:
         for place in self.known_places(word, cwds):
             parent = place.resolve().parent
             while not os.path.lexists(parent):
+                self.written.add(str(parent))
+                self.made.add(str(parent).casefold())
                 why = self.place_reason(parent, str(parent))
                 if why:
                     return why
@@ -1141,7 +1241,8 @@ class Boundary:
 
     def copy_reason(self, words: list, cwds: list) -> str | None:
         """cp SRC DST and mv SRC DST: no option, SRC a regular file, DST a file path in lead_write (mv: the name
-        itself too, and SRC)."""
+        itself too, and SRC), and DST/<basename of SRC> too where DST is a folder the line made (into_reason, review
+        T-0196.r4, gaps 3 and 4)."""
         name, args = words[0].text, words[1:]
         if len(args) != 2 or any(w.text.startswith("-") for w in args):
             raise NotListed(f"{name} other than {name} SRC DST")
@@ -1151,12 +1252,23 @@ class Boundary:
         for place in self.known_places(src, cwds):
             if os.path.islink(place) or not os.path.isfile(place):
                 return f"lead mode: {name} {src.text} is not a regular file; {BRIEF}"
-        if dst.text.endswith("/") or any(os.path.isdir(p) for p in self.known_places(dst, cwds)):
+        places = self.known_places(dst, cwds)  # normpath: a .. after a folder the line makes (d/..) is a folder
+        if dst.text.endswith("/") or any(os.path.isdir(p) or os.path.isdir(os.path.normpath(p)) for p in places):
             return f"lead mode: {name} into the folder {dst.text}, not to a file path; {BRIEF}"
-        why = self.target_reason(dst, cwds)
+        why = self.target_reason(dst, cwds) or self.into_reason(name, src, dst, cwds)
         if name == "mv":
             why = why or self.target_reason(dst, cwds, follow=False) or self.target_reason(src, cwds)
         return why
+
+    def into_reason(self, name: str, src: Word, dst: Word, cwds: list) -> str | None:
+        """Where DST names a folder an earlier mkdir of the line made (case ignored), DST/<basename of SRC>, the path
+        bash writes: the guard sees no folder there yet (review T-0196.r4, gaps 3 and 4)."""
+        if not named_paths(self.known_places(dst, cwds)) & self.made:
+            return None
+        text = f"{dst.text}/{os.path.basename(src.text)}"
+        into = Word(text=text, raw=text, tilde=dst.tilde)
+        why = self.target_reason(into, cwds)
+        return why or (self.target_reason(into, cwds, follow=False) if name == "mv" else None)
 
     def gh_reason(self, words: list, cwds: list) -> None:
         """gh pr view/list/checks and gh run list/view, with only the options of GH_OPTIONS (no --web)."""

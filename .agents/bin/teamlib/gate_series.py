@@ -3,7 +3,8 @@
 (`[gate] main`, default main; a base commit on that branch counts as main) package K < N is red: a series lands on a
 feature branch, then as one complete change. Package N/N is red there unless its diff holds the migration
 .agents/upgrade/<VERSION>.md (VERSION unchanged: or the brief's `Migration: none REASON`) and an upgrade test
-tests/test_upgrade_*.py, which the gate runs itself on the head, in a sandbox run of its own, after a green suite.
+tests/test_upgrade_*.py, which the gate runs itself on the head, in a sandbox run of its own, after a green suite;
+it is green only when at least one of its tests passed. A tests/test_upgrade_*.py whose name is no module name is red.
 gate.json keeps series, migration and upgrade_test. A brief without a Series line gates as before, with none of them.
 A leaf: teamlib.gate reaches it through gate.SERIES, which this module fills when bin/team loads it (as
 teamlib.evidence fills gate.EVIDENCE)."""
@@ -17,21 +18,35 @@ from teamlib import gate
 from teamlib.run import bundle_commit
 
 MAX_PACKAGES = 20
-# K and N: one or two ASCII digits before int() (N <= 20), so a longer number, a sign, another script's digit or
-# whitespace inside them is a malformed line, never an exception (int() refuses more than 4300 digits).
-SERIES_VALUE = re.compile(r"(\S+)[ \t]+([0-9]{1,2})/([0-9]{1,2})")
+# K and N: one to three ASCII digits before int() (001/002 is 1/2; N <= 20), so a longer number, a sign, another
+# script's digit or whitespace inside them is a malformed line, never an exception (int() refuses more than 4300
+# digits).
+SERIES_VALUE = re.compile(r"(\S+)[ \t]+([0-9]{1,3})/([0-9]{1,3})")
 SERIES_RULE = f"Series: NAME K/N, NAME a task id, 1 <= K <= N <= {MAX_PACKAGES}"
 VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
-# A module unittest can import by name: the gate runs it as python3 -m unittest tests.test_upgrade_<name>.
-UPGRADE_TEST = re.compile(r"tests/test_upgrade_[A-Za-z0-9_]+\.py")
+# Every file tests/test_upgrade_*.py of the diff (the * holds no /) is an upgrade test. The gate runs it as
+# python3 -m unittest tests.test_upgrade_<name>, so its name must be a module name (an identifier, as
+# tests/test_upgrade_.py is); any other (a dash, a dot, an empty part) is red with the form, never left out unsaid.
+UPGRADE_TEST = re.compile(r"tests/test_upgrade_[^/]*\.py")
+NO_MODULE = ("series complete but python3 -m unittest cannot import {names}: name an upgrade test "
+             "tests/test_upgrade_NAME.py, NAME letters, digits and _ (for example tests/test_upgrade_0_3_0.py)")
 NO_MIGRATION_REASON = re.compile(r"none\b[\s,.:;()–—-]*\w.*")
 NOT_CHECKED = "not checked"
 NO_TEST = "series complete but no green upgrade test"
-# python3 -m unittest exits 0 for a module without tests and for skipped tests only: the upgrade test must run at least
-# one test that passes, or the gate has verified nothing. Its log header still names python3 -m unittest.
-RUN_UNITTEST = shlex.quote("import sys, unittest; r = unittest.main(module=None, argv=['unittest', *sys.argv[1:]], "
-                           "exit=False).result; sys.exit(0 if r.wasSuccessful() and r.testsRun > len(r.skipped) "
-                           "else 1)")
+# python3 -m unittest exits 0 for a module without tests, for skipped tests only and for expected failures only: the
+# upgrade test must run at least one test that passes, or the gate has verified nothing. A pass is what unittest
+# reports with addSuccess, so a skip, an expected failure or an unexpected success is none (and wasSuccessful is
+# false after an unexpected success). Its log header still names python3 -m unittest.
+RUN_UNITTEST = shlex.quote(
+    "import sys, unittest\n"
+    "class Result(unittest.TextTestResult):\n"
+    "    passed = 0\n"
+    "    def addSuccess(self, test):\n"
+    "        super().addSuccess(test)\n"
+    "        self.passed += 1\n"
+    "r = unittest.main(module=None, argv=['unittest', *sys.argv[1:]], exit=False,\n"
+    "                  testRunner=unittest.TextTestRunner(resultclass=Result)).result\n"
+    "sys.exit(0 if r.wasSuccessful() and r.passed > 0 else 1)\n")
 
 
 def lines_of(text: str, name: str) -> list[str]:
@@ -72,6 +87,12 @@ def git_bytes(repo_dir, *args: str) -> str | None:
 def version_at(repo_dir, commit: str) -> str:
     """.agents/VERSION at commit, stripped; empty when there is none."""
     return (git_bytes(repo_dir, "cat-file", "blob", f"{commit}:.agents/VERSION") or "").strip()
+
+
+def upgrade_tests(changed: set[str]) -> tuple[list[str], list[str]]:
+    """The diff's tests/test_upgrade_*.py: (all of them, sorted; those whose name is no module name)."""
+    tests = sorted(name for name in changed if UPGRADE_TEST.fullmatch(name))
+    return tests, [name for name in tests if not name[len("tests/"):-len(".py")].isidentifier()]
 
 
 def red(fields: dict, why: str) -> dict:
@@ -116,7 +137,10 @@ def complete(fields: dict, text: str, repo_dir, start: str, head: str) -> dict:
         fields["migration"] = "missing"
         unchanged = " (VERSION is unchanged: or the brief's line Migration: none REASON)" if old == new else ""
         return red(fields, f"series complete but no migration {migration}{unchanged}")
-    tests = sorted(name for name in changed if UPGRADE_TEST.fullmatch(name))
+    tests, unimportable = upgrade_tests(changed)
+    if unimportable:
+        fields["upgrade_test"] = "invalid"
+        return red(fields, NO_MODULE.format(names=", ".join(visible(name) for name in unimportable[:10])))
     fields["upgrade_test"] = {"files": tests, "code": None} if tests else "missing"
     return {"why": None, "fields": fields, "tests": tests} if tests else red(fields, NO_TEST)
 
@@ -131,7 +155,7 @@ def finish(ini, planned: dict, result: dict, stage: Path, repo_dir, task: str) -
     run = stage / "upgrade" / task
     run.mkdir(parents=True)
     ref = bundle_commit(repo_dir, run / "repo.bundle", result["head"], f"gate-{task}-upgrade")
-    modules = " ".join(name[:-3].replace("/", ".") for name in planned["tests"])
+    modules = " ".join(shlex.quote(name[:-3].replace("/", ".")) for name in planned["tests"])
     command = f"PYTHONDONTWRITEBYTECODE=1 python3 -c {RUN_UNITTEST} {modules}"
     code = gate.gate_execute(ini, run, ref, result["head"], command, result["base"])
     copied = (run / "gate.log").read_text(encoding="utf-8", errors="replace")  # masked as it was written

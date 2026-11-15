@@ -14,6 +14,7 @@ from support import isolate_wouf_env, wouf_env, writable_copy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK = ROOT / '.agents'
+RELEASE = (PACK / 'VERSION').read_text(encoding='utf-8').strip()  # the pack's own release, no longer 0.2.0
 MANIFEST = '.agents/team/.pack-files'
 CONFIG = '.agents/team/config.ini'
 BACKUPS = '.agents/team/backups/'
@@ -94,12 +95,12 @@ class UpgradeTo020Test(unittest.TestCase):
         return result
 
     def test_the_real_path_from_0_1_0_to_0_2_0(self) -> None:
-        self.assertEqual((self.source / '.agents/VERSION').read_text().strip(), '0.2.0')
+        self.assertEqual((self.source / '.agents/VERSION').read_text().strip(), RELEASE)
         env_before = self.snapshot(self.project / '.agents/team/env')
         self.assertEqual({k: env_before[k][0] for k in STORAGES}, STORAGES)
         result = self.update()
         self.assertIn('0.1.0 -> 0.2.0', result.stdout)
-        self.assertEqual((self.project / '.agents/VERSION').read_text().strip(), '0.2.0')
+        self.assertEqual((self.project / '.agents/VERSION').read_text().strip(), RELEASE)
         self.assertTrue((self.project / '.agents/upgrade/0.2.0.md').is_file())
         self.assertEqual((self.project / CONFIG).read_bytes(), self.config.encode('utf-8'))
         self.assertEqual(self.snapshot(self.project / '.agents/team/env'), env_before)
@@ -117,7 +118,7 @@ class UpgradeTo020Test(unittest.TestCase):
         self.assertEqual(len(new_backups), len(old_backups) + 1, sorted(new_backups))
         self.assertEqual({k: new_backups.get(k) for k in old_backups}, old_backups)
         self.assertEqual(self.backups(after_second, inside=False), self.backups(after_first, inside=False))
-        self.assertEqual((self.project / '.agents/VERSION').read_text().strip(), '0.2.0')
+        self.assertEqual((self.project / '.agents/VERSION').read_text().strip(), RELEASE)
 
 
 if __name__ == '__main__':

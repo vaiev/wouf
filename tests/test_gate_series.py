@@ -27,8 +27,13 @@ PASSING = ("import os\nimport unittest\n\n\nclass Upgrade(unittest.TestCase):\n 
            "        print('upgrade-ran', os.environ['WOUF_HEAD'], os.path.isfile('.agents/VERSION'))\n")
 FAILING = ("import unittest\n\n\nclass Upgrade(unittest.TestCase):\n    def test_upgrade(self):\n"
            "        self.fail('the upgrade broke')\n")
+# An upgrade test of another name than PASSING's: it prints its own module name, so the log shows which file ran.
+NAMED = ("import unittest\n\n\nclass Upgrade(unittest.TestCase):\n    def test_upgrade(self):\n"
+         "        print('upgrade-ran', __name__)\n")
 LATER = "package {k} of {n} cannot land on main alone; land the series on a feature branch, then one complete change"
 NO_TEST = "series complete but no green upgrade test"
+NO_MODULE = ("series complete but python3 -m unittest cannot import {names}: name an upgrade test "
+             "tests/test_upgrade_NAME.py, NAME letters, digits and _ (for example tests/test_upgrade_0_3_0.py)")
 COMPLETE = {".agents/VERSION": "0.3.0\n", ".agents/upgrade/0.3.0.md": "# 0.3.0\n\nFrom: 0.2.0\n",
             "tests/test_upgrade_0_3_0.py": PASSING}
 # gate.json of a gate with a command, as the base writes it (no complexity line in this suite's output).
@@ -190,18 +195,79 @@ class SeriesGateTest(unittest.TestCase):
         self.assertIn("the upgrade broke", done.stdout, "the red output shows the upgrade test's failure")
 
     def test_an_upgrade_test_that_runs_no_test_is_red(self) -> None:
-        # unittest exits 0 for a module without tests, and for one whose tests are all skipped: neither is a green
-        # upgrade test (the review's reproduction: an empty tests/test_upgrade_0_3_0.py came out green, code 0)
+        # unittest exits 0 for a module without tests, for one whose tests are all skipped and for one whose only
+        # tests are expected failures: none is a green upgrade test (the reviews' reproductions: an empty
+        # tests/test_upgrade_0_3_0.py, then T-0189.r2's expectedFailure-only one, came out green, code 0). An
+        # unexpected success is no pass either.
         empty = "import unittest\n"
         skipped = ("import unittest\n\n\nclass Upgrade(unittest.TestCase):\n    @unittest.skip('later')\n"
                    "    def test_upgrade(self):\n        pass\n")
-        for body in (empty, skipped):
+        expected = ("import unittest\n\n\nclass Upgrade(unittest.TestCase):\n    @unittest.expectedFailure\n"
+                    "    def test_upgrade(self):\n        self.fail('the upgrade broke')\n")
+        unexpected = ("import unittest\n\n\nclass Upgrade(unittest.TestCase):\n    @unittest.expectedFailure\n"
+                      "    def test_upgrade(self):\n        pass\n")
+        for body in (empty, skipped, expected, unexpected):
             with self.subTest(body=body):
                 self.work({**COMPLETE, "tests/test_upgrade_0_3_0.py": body})
                 done, state = self.gate("Series: T-0167 5/5\n")
                 self.assert_red(done, state, NO_TEST, suite=True)
                 self.assertNotEqual(state["upgrade_test"]["code"], 0, "no upgrade test ran and passed")
                 self.assertNotIn("upgrade-ran", self.log())
+
+    def test_an_upgrade_test_with_one_passing_test_beside_an_expected_failure_or_a_skip_is_green(self) -> None:
+        body = PASSING + ("\n    @unittest.expectedFailure\n    def test_later(self):\n        self.fail('not yet')\n"
+                          "\n    @unittest.skip('later')\n    def test_skipped(self):\n        pass\n")
+        head = self.work({**COMPLETE, "tests/test_upgrade_0_3_0.py": body})
+        done, state = self.gate("Series: T-0167 5/5\n")
+        self.assert_green(done, state)
+        self.assertEqual(state["upgrade_test"], {"files": ["tests/test_upgrade_0_3_0.py"], "code": 0})
+        self.assertIn(f"upgrade-ran {head} True", self.log())
+
+    def test_every_upgrade_test_whose_name_is_a_module_name_is_found_and_run(self) -> None:
+        # review T-0189.r1: tests/test_upgrade_.py matches tests/test_upgrade_*.py and is a module name, yet the gate
+        # refused it; T-0189.r2: so was tests/test_upgrade_\u00fc.py. Each runs, beside tests/test_upgrade_0_3_0.py.
+        names = ("tests/test_upgrade_.py", "tests/test_upgrade_0_3_0.py", "tests/test_upgrade_v0_3_0_Late.py",
+                 "tests/test_upgrade_\u00fc.py")
+        self.work({**COMPLETE, **{name: NAMED for name in names}})
+        done, state = self.gate("Series: T-0167 5/5\n")
+        self.assert_green(done, state)
+        self.assertEqual(state["upgrade_test"], {"files": sorted(names), "code": 0})
+        log = self.log()
+        self.assertIn("--- upgrade test: python3 -m unittest tests.test_upgrade_ tests.test_upgrade_0_3_0 "
+                      "tests.test_upgrade_v0_3_0_Late 'tests.test_upgrade_\u00fc': exit 0 ---", log)
+        for name in names:
+            with self.subTest(name=name):
+                self.assertIn(f"upgrade-ran {name[:-3].replace('/', '.')}\n", log)
+        # alone, the one without a version part is the upgrade test too
+        self.work({**{k: v for k, v in COMPLETE.items() if k != "tests/test_upgrade_0_3_0.py"},
+                   "tests/test_upgrade_.py": NAMED})
+        done, state = self.gate("Series: T-0167 5/5\n")
+        self.assert_green(done, state)
+        self.assertEqual(state["upgrade_test"], {"files": ["tests/test_upgrade_.py"], "code": 0})
+        # a file in a folder below tests/ is no tests/test_upgrade_*.py: * holds no /
+        self.work({**{k: v for k, v in COMPLETE.items() if k != "tests/test_upgrade_0_3_0.py"},
+                   "tests/test_upgrade_0_3_0/test_it.py": NAMED})
+        self.assert_red(*self.gate("Series: T-0167 5/5\n"), NO_TEST)
+
+    def test_an_upgrade_test_name_unittest_cannot_import_is_red_with_the_form_it_needs(self) -> None:
+        # review T-0189.r1/r2: a name with a dash, a dot or an empty part matches tests/test_upgrade_*.py, but the gate
+        # runs it as a module and cannot: it was left out unsaid ("no green upgrade test"); now it is red and the
+        # reason names the form, before anything runs, also beside an upgrade test that would pass
+        without = {k: v for k, v in COMPLETE.items() if k != "tests/test_upgrade_0_3_0.py"}
+        for name in ("tests/test_upgrade_0-3-0.py", "tests/test_upgrade_0.3.0.py", "tests/test_upgrade_0..3.py",
+                     "tests/test_upgrade_0 3.py"):
+            for files in (without, COMPLETE):
+                with self.subTest(name=name, beside=sorted(files)):
+                    self.work({**files, name: NAMED})
+                    done, state = self.gate("Series: T-0167 5/5\n")
+                    self.assert_red(done, state, NO_MODULE.format(names=name))
+                    self.assertEqual((state["migration"], state["upgrade_test"]), (".agents/upgrade/0.3.0.md",
+                                                                                   "invalid"))
+                    self.assertNotIn("upgrade-ran", self.log())
+        # every such name is named, as the terminal shows it
+        self.work({**without, "tests/test_upgrade_0-3-0.py": NAMED, "tests/test_upgrade_a\tb.py": NAMED})
+        self.assert_red(*self.gate("Series: T-0167 5/5\n"),
+                        NO_MODULE.format(names="tests/test_upgrade_0-3-0.py, tests/test_upgrade_a\\tb.py"))
 
     def test_the_complete_package_with_version_unchanged_needs_migration_none_with_a_reason(self) -> None:
         self.work({"tests/test_upgrade_0_2_0_series.py": PASSING, "README.md": "the series, complete\n"})
@@ -266,11 +332,14 @@ class SeriesGateTest(unittest.TestCase):
     def test_two_series_lines_are_red(self) -> None:
         self.assert_malformed("Series: T-0167 1/2\nSeries: T-0167 2/2\n", "2 Series lines, a brief has one")
 
-    def test_k_and_n_are_one_or_two_ascii_digits_else_the_line_is_malformed_and_gate_json_is_written(self) -> None:
+    def test_k_and_n_are_one_to_three_ascii_digits_else_the_line_is_malformed_and_gate_json_is_written(self) -> None:
         # review T-0189.r2: int() of 5000 nines raised ValueError, so team gate wrote no gate.json; a sign, a non-ASCII
-        # digit or whitespace inside the numbers is no K/N either (the gate() helper asserts gate.json exists)
+        # digit, whitespace inside the numbers or a fourth digit is no K/N either (the gate() helper asserts gate.json
+        # exists)
         for label, line in (("K of 5000 nines", "Series: T-0167 " + "9" * 5000 + "/3\n"),
                             ("N of 5000 nines", "Series: T-1 1/" + "9" * 5000 + "\n"),
+                            ("K of four digits", "Series: T-1 0001/002\n"),
+                            ("N of four digits", "Series: T-1 1/0002\n"),
                             ("Arabic-Indic digits", "Series: T-1 \u0661/\u0663\n"), ("minus", "Series: T-1 -1/3\n"),
                             ("plus", "Series: T-1 +1/3\n"), ("space", "Series: T-1 1 /3\n"),
                             ("tab", "Series: T-1 1/\t3\n")):
@@ -283,6 +352,22 @@ class SeriesGateTest(unittest.TestCase):
         self.assertEqual(state["series"], {"name": "T-1", "package": 1, "of": 3, "main": False})
         self.work({"README.md": "a package\n"})
         self.assert_red(*self.gate("Series: T-1 01/03\n"), LATER.format(k=1, n=3))
+        # review T-0189.r1: three digits with leading zeros, 001/002 is 1/2; the bounds hold for three digits too
+        self.work({"README.md": "a package\n"}, self.feature)
+        for line, k, n in (("Series: T-1 001/002\n", 1, 2), ("Series: T-1 020/020\n", 20, 20),
+                           ("Series: T-1 1/020\n", 1, 20)):
+            with self.subTest(line=line):
+                done, state = self.gate(line, self.feature)
+                self.assert_green(done, state)
+                self.assertEqual(state["series"], {"name": "T-1", "package": k, "of": n, "main": False})
+        self.work({"README.md": "a package\n"})
+        self.assert_red(*self.gate("Series: T-1 001/002\n"), LATER.format(k=1, n=2))
+        for line, problem in (("Series: T-1 000/002\n", "K and N count from 1"),
+                              ("Series: T-1 003/002\n", "K 3 is greater than N 2"),
+                              ("Series: T-1 001/021\n", "N 21 is more than 20"),
+                              ("Series: T-1 999/999\n", "N 999 is more than 20")):
+            with self.subTest(line=line):
+                self.assert_malformed(line, problem)
 
     # ---- help and plug-in
 

@@ -80,7 +80,7 @@ class SiteRedesignTest(unittest.TestCase):
         parser = LandingParser()
         html = (SITE / 'index.html').read_text(encoding='utf-8')
         parser.feed(html)
-        # F16: demo, how it works, five strengths, get started, limits, it builds itself (with the sentence)
+        # F16: demo, how it works, six strengths, get started, limits, it builds itself (with the sentence)
         # final round: five bands, none numbered (no section index, no step counter)
         self.assertEqual(len(parser.bands), 5)
         self.assertEqual([b['labels'] for b in parser.bands], [[] for _ in range(5)])
@@ -101,8 +101,10 @@ class SiteRedesignTest(unittest.TestCase):
                       "The gate command you configure, your tests for example, runs before review without an AI call.",
                       "For a batch, WOUF checks that the tasks' declared file areas do not overlap before starting them together.",
                       "Teams can exchange signed handoffs through a shared Git repository, without a dedicated WOUF server.",
-                      "Team events and readable summaries can live in your Git repository, so you can follow the work over time."):
+                      "Team events and readable summaries can live in your Git repository, so you can follow the work over time.",
+                      "A landed change can carry a signed receipt of what was measured: the gate's result, the reviews that approved that exact commit and the network hosts the bots reached. Its signature can be checked offline."):
             self.assertIn(claim, text)
+        self.assertIn("A receipt shows what the team recorded and signed. It does not show that the code is right or that a reviewer read every line.", text)
         # nothing from CLAIMS.md's "must not appear" list, and no legal promise
         for page in ('index.html', 'docs.html', 'examples.html'):
             low = (SITE / page).read_text(encoding='utf-8').lower()

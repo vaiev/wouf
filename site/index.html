@@ -106,13 +106,14 @@
   </section>
 
   <section class="band" id="strengths" aria-labelledby="strengths-h">
-    <div class="band-head"><p class="band-kicker"><span>What it does for you</span></p><h2 class="display-s" id="strengths-h">Five things built in.</h2></div>
+    <div class="band-head"><p class="band-kicker"><span>What it does for you</span></p><h2 class="display-s" id="strengths-h">Six things built in.</h2></div>
     <ul class="strengths" role="list">
       <li><h3 class="title-l">Each bot in its own workspace</h3><p>Choose a sandboxed setup to give each bot its own workspace, separate from your project and home folders.</p></li>
       <li><h3 class="title-l">A check before review</h3><p>The gate command you configure, your tests for example, runs before review without an AI call. This repository's own gate adds a complexity check (<code class="mono">scripts/complexity.py</code>) that you can copy into yours.</p></li>
       <li><h3 class="title-l">Side by side, checked first</h3><p>For a batch, WOUF checks that the tasks' declared file areas do not overlap before starting them together.</p></li>
       <li><h3 class="title-l">Shared between teams</h3><p>Teams can exchange signed handoffs through a shared Git repository, without a dedicated WOUF server.</p></li>
       <li><h3 class="title-l">Work you can follow</h3><p>Team events and readable summaries can live in your Git repository, so you can follow the work over time. The key that signs WOUF's own change receipts has the fingerprint <code class="mono">SHA256:kQfxHJ5w0JRzMT4JIburS5E0zGHlwk47+Zvauk5Ac1w</code> (ED25519); it is published in this repository and here, so compare it with a second copy, for example the release note of the tag, before you trust it.</p></li>
+      <li><h3 class="title-l">Receipts you can check</h3><p>A landed change can carry a signed receipt of what was measured: the gate's result, the reviews that approved that exact commit and the network hosts the bots reached. Its signature can be checked offline.</p></li>
     </ul>
   </section>
 
@@ -148,6 +149,7 @@
       <li><h3 class="title-m">The network is open by default</h3><p>The shipped container setting gives open network access. Cloud models need the internet, so what a bot works on goes to the model provider.</p></li>
       <li><h3 class="title-m">Rules are instructions</h3><p>Roles and questions are instructions to the models, not a guarantee that they comply.</p></li>
       <li><h3 class="title-m">Legal rules are yours to check</h3><p>Whether a setup meets the law where you work depends on the model and how you run it. WOUF does not settle that for you.</p></li>
+      <li><h3 class="title-m">A receipt is not a proof of quality</h3><p>A receipt shows what the team recorded and signed. It does not show that the code is right or that a reviewer read every line.</p></li>
     </ul>
     <p class="band-more"><a href="docs.html#limits">All limits in the docs</a></p>
   </section>

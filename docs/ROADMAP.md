@@ -1,12 +1,12 @@
 # Roadmap
 
-This page says what version 0.2.0 contains, what is being built now, and what may come after. Version 0.2.0 is the latest release, dated 2026-11-12 (`.agents/VERSION`, `CHANGELOG.md`); it follows 0.1.0, dated 2026-11-06.
+This page says what version 0.2.1 contains, what is being built now, and what may come after. Version 0.2.1 is the latest release, dated 2026-11-15 (`.agents/VERSION`, `CHANGELOG.md`); it follows 0.2.0, dated 2026-11-12, and 0.1.0, dated 2026-11-06.
 
 Each item names where it lives in the code as `file::symbol`. `teamlib/run.py::mask_stream` means the function `mask_stream` in `.agents/bin/teamlib/run.py`; `bin/` means `.agents/bin/`. The rules, roles and skills are instructions to the models: the code does not enforce them.
 
-## Now: what 0.2.0 contains
+## Now: what 0.2.1 contains
 
-Everything 0.1.0 contained, listed here, and what 0.2.0 adds ("New in 0.2.0", below).
+Everything 0.1.0 contained, listed here, and what 0.2.0 and 0.2.1 add ("New in 0.2.0" and "New in 0.2.1", below).
 
 ### The team
 
@@ -64,11 +64,18 @@ Not in 0.1.0; `CHANGELOG.md` lists them under "[0.2.0] - 2026-11-12".
 - `team flow TASK --close --reason TEXT`: an end event for a flow that landed another way (`teamlib/flowend.py::close`).
 - New task and goal ids keep the team's zero padding (`teamlib/core.py::next_task_id`).
 
+## New in 0.2.1
+
+Not in 0.2.0; `CHANGELOG.md` lists them under "[0.2.1] - 2026-11-15". There is no upgrade step and no new config key (`.agents/upgrade/0.2.1.md`).
+
+- The lead's guard refuses more crafted lines: a `cd` with a redirection or through a missing folder adds its folder, a `cd` whose folder holds `..` and passes a symlink (or runs in a session folder reached through one) and any `cd` after a `cd` that passed a symlink refuse the line, a lead_env value that names a path the line writes refuses it too, a `cp` or `mv` into a folder the line made is checked as the path bash writes, and a `mkdir` with `..` refuses the line (`bin/guardlib_lead.py::cd_way`, `bin/guardlib_lead.py::cd_walk`, `bin/guardlib_lead.py::named`, `bin/guardlib_lead.py::env_value`).
+- The series gate counts passes, runs every importable `tests/test_upgrade_*.py` of the diff and takes `001/002` (`teamlib/gate_series.py::series_of`, `teamlib/gate_series.py::upgrade_tests`, `teamlib/gate_series.py::complete`).
+
 ## In progress
 
-- `team update` in real use (T-0107). The command, the upgrade path and the backups are in 0.1.0 (above). The release entries are 0.1.0 (`.agents/upgrade/0.1.0.md`) and 0.2.0 (`.agents/upgrade/0.2.0.md`, from 0.1.0, no steps), so no upgrade step from one release to the next has run yet.
+- `team update` in real use (T-0107). The command, the upgrade path and the backups are in 0.1.0 (above). The release entries are 0.1.0 (`.agents/upgrade/0.1.0.md`), 0.2.0 (`.agents/upgrade/0.2.0.md`, from 0.1.0, no steps) and 0.2.1 (`.agents/upgrade/0.2.1.md`, from 0.2.0, no steps), so no upgrade step from one release to the next has run yet.
 
-## After 0.2.0
+## After 0.2.1
 
 Plans, not promises. Nothing here has a date.
 

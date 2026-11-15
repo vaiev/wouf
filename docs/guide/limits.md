@@ -45,9 +45,9 @@ Bot output reaches the lead framed as data, not instructions. The lead is still 
 
 The container flow is tested with Docker and a stand-in agent CLI. The tests that need a real container engine or a working bubblewrap are skipped on a computer without them, so a green run there proves less. The commands for the real agent CLIs and the example connectors follow their documentation; check them against your versions.
 
-## Version 0.2.0
+## Version 0.2.1
 
-Version 0.2.0, dated 2026-11-12, is the latest release; 0.1.0, dated 2026-11-06, was the first. This guide describes `main`; the changelog says what each contains.
+Version 0.2.1, dated 2026-11-15, is the latest release; 0.2.0, dated 2026-11-12, and 0.1.0, dated 2026-11-06, came before it. This guide describes `main`; the changelog says what each contains.
 
 ### Change receipts
 

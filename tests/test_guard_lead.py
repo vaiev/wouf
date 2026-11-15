@@ -1524,6 +1524,371 @@ def _cd_tests() -> None:
 
 _cd_tests()
 
+# Review T-0188.r23, N1 to N3: bash does not end up where the guard took these cds to, so a later write was checked
+# against the wrong folder. Each entry: the line, what the refusal names, and the file (relative to the project) bash
+# writes when it runs the line (None: not run here). N1: bash does not run a builtin whose redirection fails, so a cd
+# with any redirection adds its folder (the last three: forms the review's table does not list).
+CD_REDIRECTED = {
+    "read_missing": ("cd ./docs/notes < nofile; echo x > a.md", "a.md", "a.md"),
+    "write_into_a_missing_folder": ("cd ./docs/notes > docs/notes/nodir/f; echo x > a.md", "a.md", "a.md"),
+    "write_onto_a_folder": ("cd ./docs/notes > docs/notes; echo x > src/a.txt", "src/a.txt", "src/a.txt"),
+    "guard_config": ("cd ./docs/notes < nofile; echo x > team/config.ini", "team/config.ini", None),
+    "guard_itself": ("cd ./docs/notes < nofile; echo x > .agents/bin/guard", ".agents/bin/guard", None),
+    "before_and": ("cd ./docs/notes < nofile && echo x > a.md", "a.md", None),
+    "append": ("cd ./docs/notes >> docs/notes/log.md; echo x > a.md", "a.md", None),
+    "stderr_to_null": ("cd ./docs/notes 2>/dev/null; echo x > a.md", "a.md", None),
+    "heredoc": ("cd ./docs/notes <<EOF\nx\nEOF\necho x > a.md", "a.md", None),
+}
+# The controls of the N1 table, and the redirections of a cd that the redirection rule refuses whatever the cd.
+CD_CONTROLS = {"control_note": ("echo x > a.md", "a.md", None),
+               "control_config": ("echo x > team/config.ini", "team/config.ini", None),
+               "stderr_to_a_file": ("cd ./docs/notes 2> docs/notes/err.md; echo x > a.md", "2>", None),
+               "both_to_null": ("cd ./docs/notes &> /dev/null; echo x > a.md", "&>", None),
+               "here_string": ("cd ./docs/notes <<< x; echo x > a.md", "<<<", None)}
+# N2: bash checks each folder before the .. after it, Path.resolve() folds the .. first. A cd whose folder on the way
+# is missing or a file adds its folder, also before && (where bash skips the rest when the cd fails).
+CD_UNREACHED = {
+    "missing_before_dot_dot": ("cd ./docs/notes/nonexist/..; echo x > a.md", "a.md", "a.md"),
+    "missing_in_the_middle": ("cd ./docs/nonexist/../notes; echo x > a.md", "a.md", "a.md"),
+    "file_before_dot_dot": ("cd ./docs/notes/x.md/..; echo x > a.md", "a.md", "a.md"),
+    "workflow": ("cd ./docs/notes/nonexist/..; echo x > .github/workflows/ci.yml", ".github/workflows/ci.yml", None),
+    "code_suffix": ("cd ./docs/notes/nonexist/..; echo x > src/a.py", "src/a.py", None),
+    "missing_before_and": ("cd ./docs/notes/nonexist/.. && echo x > a.md", "a.md", None),
+}
+# N3, with src/L -> ../docs/notes/sub: bash's cd is logical, the guard's resolve physical, so a cd .. after the link
+# ends in src for bash. A cd whose folder as written holds .. and passes a symlink, and any cd after a cd of the line
+# that passed one (narrowed, added or skipped), cannot tell; a link without .. adds its folder (normpath != resolved).
+LINKED = "a cd through a symlink"
+CD_LINKED = {
+    "and_then_up": ("cd ./src/L && cd ../ && echo x > y.md", (CANNOT_TELL, LINKED), "src/y.md"),
+    "semicolon_then_up": ("cd ./src/L; cd ../; echo x > y.md", (CANNOT_TELL, LINKED), "src/y.md"),
+    "up_through_the_link": ("cd ./src/L/..; echo x > y.md", (CANNOT_TELL, "a .. and a symlink"), "src/y.md"),
+    "dot_dot_before_the_link": ("cd ../project/src/L; echo x > y.md", (CANNOT_TELL, "a .. and a symlink"), None),
+    "dot_dot_and_a_redirection": ("cd ./src/L/.. < nofile; echo x > y.md", (CANNOT_TELL, "a .. and a symlink"), None),
+    "after_a_skipped_cd": ("true || cd ./src/L; cd ./docs/notes && echo x > y.md", (CANNOT_TELL, LINKED), None),
+    "after_a_subshell_cd": ("(cd ./src/L); cd ./docs/notes && echo x > y.md", (CANNOT_TELL, LINKED), None),
+    "after_an_added_cd": ("cd ./src/L < nofile; cd {project}/docs/notes && echo x > y.md", (CANNOT_TELL, LINKED),
+                          None),
+    "a_link_adds": ("cd ./src/L && echo x > y.md", "y.md", None),
+}
+# A cd with no redirection, every folder on the way there and no symlink still narrows: bash writes docs/notes/y.md.
+CD_WAY_ALLOWED = ["cd ./docs/notes && echo x > y.md", "cd ./docs/notes; echo x > y.md",
+                  "cd ./docs/notes/sub/..; echo x > y.md", "cd ./docs/notes/../notes && echo x > y.md",
+                  "cd ./docs && cd ./notes && echo x > y.md", "cd {project}/docs/notes\necho x > y.md"]
+
+
+class CdWayTest(ShapeCase):
+    """Review T-0188.r23, N1 to N3, through guard check-command and both hook forms (CdTest's assert_line_forms),
+    with lead_write = docs/notes/**: where bash may not end where the guard resolves a cd, the cd adds its folder or
+    the line cannot tell, and bash, run on the line, writes outside lead_write. src/L -> ../docs/notes/sub is a folder
+    symlink outside lead_write that points into it."""
+
+    assert_line_forms = CdTest.assert_line_forms
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.lead_write = "docs/notes/**"
+        (self.project / "docs" / "notes" / "sub").mkdir()
+        (self.project / "src" / "L").symlink_to(Path("..") / "docs" / "notes" / "sub")
+
+    def run_bash(self, cmd: str, where: str) -> bool:
+        """Whether bash, run on cmd in the project, writes where (relative to the project; removed again)."""
+        env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.home)}
+        subprocess.run(["bash", "-c", cmd], cwd=self.project, capture_output=True, stdin=subprocess.DEVNULL, env=env,
+                       timeout=20)
+        written = (self.project / where).is_file()
+        if written:
+            (self.project / where).unlink()
+        return written
+
+    def assert_bash_writes(self, cmd: str, where: str) -> None:
+        """bash writes where and no file of that name in docs/notes, where the guard took the cd."""
+        self.assertTrue(self.run_bash(cmd, where), cmd)
+        self.assertEqual(sorted((self.project / "docs" / "notes").rglob(Path(where).name)), [], cmd)
+
+    def test_a_plain_cd_still_narrows(self) -> None:
+        for cmd in CD_WAY_ALLOWED:
+            cmd = cmd.format(project=self.project)
+            with self.subTest(cmd=cmd):
+                self.assert_line_forms(cmd)
+                self.assertTrue(self.run_bash(cmd, "docs/notes/y.md"), cmd)
+
+    def test_a_project_under_a_symlink_still_narrows(self) -> None:
+        """The project (AGENTS_PROJECT_DIR, the guard's folder and the hook's cwd) is a symlink to it: a plain cd joins
+        onto the folder as the guard resolves it, so it still narrows; a write in src still refuses."""
+        alias = Path(self.tmp.name) / "alias"
+        alias.symlink_to(self.project)
+        self.project = alias
+        for cmd in ("cd ./docs/notes && echo x > a.md", "cd ./docs/notes; echo x > a.md"):
+            with self.subTest(cmd=cmd):
+                self.assert_line_forms(cmd)
+        self.assert_line_forms("cd ./src; echo x > a.md", "a.md")
+
+
+def _cd_way_tests() -> None:
+    tables = {**CD_REDIRECTED, **CD_CONTROLS, **CD_UNREACHED, **CD_LINKED}
+    for name, (cmd, names, where) in tables.items():
+        def refused(self: CdWayTest, cmd: str = cmd, names: str | tuple = names, where: str | None = where) -> None:
+            cmd = cmd.format(project=self.project)
+            self.assert_line_forms(cmd, *((names,) if isinstance(names, str) else names))
+            if where:
+                self.assert_bash_writes(cmd, where)
+
+        setattr(CdWayTest, f"test_refused_{name}", refused)
+
+
+_cd_way_tests()
+
+# Review T-0188.r23, N4: env_value_ok checks a lead_env value against the folder before the line runs, so a value
+# that names a path the line writes before it cannot tell, in every folder the guard tracks there and for every write
+# target it checks. ops/run.sh is the lead_run script.
+ENV_WRITTEN = {
+    "redirect": "cd ./docs/notes && echo data > evil && PKG_MAIN=evil bash ../../ops/run.sh",
+    "append_then_semicolon": "cd ./docs/notes && echo data >> evil; PKG_MAIN=evil bash ../../ops/run.sh",
+    "cp": "cd ./docs/notes && cp x.md evil && PKG_MAIN=evil bash ../../ops/run.sh",
+    "mv": "cd ./docs/notes && mv x.md evil && PKG_MAIN=evil bash ../../ops/run.sh",
+    "mkdir": "cd ./docs/notes && mkdir ./evil && PKG_MAIN=evil bash ../../ops/run.sh",
+    "mkdir_parents": "mkdir -p docs/notes/evil/sub && cd ./docs/notes && PKG_MAIN=evil bash ../../ops/run.sh",
+    "export": "cd ./docs/notes && echo data > evil && export PKG_MAIN=evil",
+    "written_before_the_cd": "echo data > docs/notes/evil && cd ./docs/notes && PKG_MAIN=evil bash ../../ops/run.sh",
+    "same_command": "cd ./docs/notes && PKG_MAIN=evil bash ../../ops/run.sh > evil",
+    "written_and_present": "cd ./docs/notes && echo data > x.md && PKG_MAIN=x.md bash ../../ops/run.sh",
+}
+# Values that name nothing the line wrote before them, in a folder the guard tracks there: their result as before.
+ENV_NOT_WRITTEN = ["cd ./docs/notes && echo data > other && PKG_MAIN=evil bash ../../ops/run.sh",
+                   "cd ./docs/notes && PKG_MAIN=main bash ../../ops/run.sh",
+                   "echo data > docs/notes/evil && PKG_MAIN=evil bash ops/run.sh"]
+
+
+class LeadEnvWrittenTest(ShapeCase):
+    """Review T-0188.r23 N4, through guard check-command and both hook forms, with lead_write = docs/notes/**."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.lead_write = "docs/notes/**"
+        self.lead_env = CONFIG_LEAD_ENV
+        (self.project / "ops" / "run.sh").write_text("true\n", encoding="utf-8")
+
+    def test_the_existing_file_case_stays_refused(self) -> None:
+        self.assert_refused("cd ./docs/notes && PKG_MAIN=x.md bash ../../ops/run.sh", NOT_LISTED, "PKG_MAIN")
+
+    def test_a_value_naming_nothing_written_keeps_its_result(self) -> None:
+        for cmd in ENV_NOT_WRITTEN:
+            with self.subTest(cmd=cmd):
+                self.assert_allowed_forms(cmd, [])
+
+
+def _env_written_tests() -> None:
+    for name, cmd in ENV_WRITTEN.items():
+        def refused(self: LeadEnvWrittenTest, cmd: str = cmd) -> None:
+            value = re.search(r"PKG_MAIN=(\S+)", cmd).group(1)
+            self.assert_refused(cmd, CANNOT_TELL, f"PKG_MAIN={value}: the line writes {value} before")
+
+        setattr(LeadEnvWrittenTest, f"test_refused_{name}", refused)
+
+
+_env_written_tests()
+
+
+class GlobHintTest(ShapeCase):
+    """Review T-0188.r23 N5: a word with a glob and no variable or substitution that literals() refuses says to quote
+    the glob; its variable or substitution case, and exact(), keep their text."""
+
+    def test_an_unquoted_include_glob_says_quote_the_glob(self) -> None:
+        self.assert_refused("grep -rn a --include=*.py src", CANNOT_TELL,
+                            "(grep --include=*.py: the shell computes it; quote the glob)")
+        self.assert_allowed_forms("grep -rn a --include='*.py' src", [["grep", "-rn", "a", "--include=*.py", "src"]])
+
+    def test_a_variable_or_an_exact_path_keeps_its_text(self) -> None:
+        for cmd, shown in (("grep -rn a $X src", "(grep $X: the shell computes it)"),
+                           ("grep -rn a --include=$X*.py src", "(grep --include=$X*.py: the shell computes it)"),
+                           ("echo x > docs/notes/*.md", "(the target docs/notes/*.md: the shell computes it)")):
+            with self.subTest(cmd=cmd):
+                result = self.run_guard("on", "check-command", cmd)
+                self.assert_lead_blocked(result, CANNOT_TELL, shown)
+                self.assertNotIn("quote the glob", result.stderr)
+
+
+# Review T-0196.r4, known gaps 1 to 5: the guard checked another path than the one bash writes. Each entry: the line
+# ({project}: the project), the folder it runs in (below the test's temp folder) and what the refusal names (none:
+# allowed). Gap 1: the session's folder A/alias is a symlink to the project, and A/project/docs/notes exists.
+SESSION_LINK = "a .. from a session folder reached through a symlink"
+GAP_LINES = {
+    "1_session_link_dot_dot": ("cd ../project/docs/notes && echo x > harmless.md", "A/alias",
+                               (CANNOT_TELL, SESSION_LINK)),
+    "1_session_link_plain": ("cd ./docs/notes && echo x > x.md", "A/alias", ()),
+    "2_export_before_the_write": ("cd ./docs/notes && export PKG_MAIN=evil && echo data > evil && "
+                                  "bash ../../ops/run.sh", "project",
+                                  (CANNOT_TELL, "PKG_MAIN=evil: the line writes evil")),
+    "2_export_before_the_cd": ("export PKG_MAIN=evil && cd ./docs/notes && echo data > evil && bash ../../ops/run.sh",
+                               "project", (CANNOT_TELL, "PKG_MAIN=evil: the line writes evil")),
+    "2_copy_after_the_value": ("cd ./docs/notes; export PKG_MAIN=evil; cp x.md evil; bash ../../ops/run.sh",
+                               "project", (CANNOT_TELL, "PKG_MAIN=evil: the line writes evil")),
+    "3_cp_into_a_made_folder": ("mkdir docs/notes/d && cp team/briefs/T-1.md docs/notes/d && cd ./docs/notes/d && "
+                                "PKG_MAIN=T-1.md bash {project}/ops/run.sh", "project",
+                                (CANNOT_TELL, "PKG_MAIN=T-1.md: the line writes T-1.md")),
+    "3_mv_into_a_made_folder": ("mkdir docs/notes/d && mv docs/notes/x.md docs/notes/d && cd ./docs/notes/d && "
+                                "PKG_MAIN=x.md bash {project}/ops/run.sh", "project",
+                                (CANNOT_TELL, "PKG_MAIN=x.md: the line writes x.md")),
+    "4_code_into_a_made_folder": ("mkdir docs/notes/d && cp src/a.py docs/notes/d", "project",
+                                  ("docs/notes/d/a.py", "is code")),
+    "4_code_into_a_made_parent": ("mkdir -p docs/notes/d/e && cp src/a.py docs/notes/d", "project",
+                                  ("docs/notes/d/a.py", "is code")),
+    "4_code_from_a_cd": ("cd ./docs/notes && mkdir d && cp ../../src/a.py d", "project", ("d/a.py", "is code")),
+    "4_code_through_a_made_folder": ("mkdir docs/notes/d && cp src/a.py docs/notes/d/..", "project",
+                                     ("cp into the folder docs/notes/d/..",)),
+    "4_note_into_a_made_folder": ("mkdir docs/notes/d && cp docs/notes/x.md docs/notes/d", "project", ()),
+    "4_note_moved_into_a_made_folder": ("mkdir -p docs/notes/d && mv docs/notes/x.md docs/notes/d", "project", ()),
+    "5_case_from_docs_notes": ("echo data > Evil && PKG_MAIN=evil bash ops/run.sh", "project/docs/notes",
+                               (CANNOT_TELL, "PKG_MAIN=evil: the line writes evil")),
+    "5_case_after_a_cd": ("cd ./docs/notes && echo data > Evil && PKG_MAIN=evil bash ../../ops/run.sh", "project",
+                          (CANNOT_TELL, "PKG_MAIN=evil: the line writes evil")),
+    "5_case_after_the_value": ("cd ./docs/notes && export PKG_MAIN=EVIL && echo data > evil && bash ../../ops/run.sh",
+                               "project", (CANNOT_TELL, "PKG_MAIN=EVIL: the line writes EVIL")),
+}
+# The file each of these lines makes bash write (relative to the temp folder): outside lead_write, or code in it.
+GAP_BASH_WRITES = {"1_session_link_dot_dot": "A/project/docs/notes/harmless.md",
+                   "3_cp_into_a_made_folder": "project/docs/notes/d/T-1.md",
+                   "4_code_into_a_made_folder": "project/docs/notes/d/a.py",
+                   "4_code_through_a_made_folder": "project/docs/notes/a.py"}
+
+
+class KnownGapsTest(ShapeCase):
+    """Review T-0196.r4, known gaps 1 to 5, through guard check-command (run in the line's folder, with PWD as a
+    shell passes it) and the Bash hook (its cwd), with lead_write = docs/notes/** and lead_env = CONFIG_LEAD_ENV;
+    with lead_mode off, the base result."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.lead_write = "docs/notes/**"
+        self.lead_env = CONFIG_LEAD_ENV
+        (self.project / "ops" / "run.sh").write_text("true\n", encoding="utf-8")
+        self.root = self.project.parent
+        (self.root / "A" / "project" / "docs" / "notes").mkdir(parents=True)
+        (self.root / "A" / "alias").symlink_to(self.project)
+
+    def run_in(self, mode: str, cwd: Path, *args: str, stdin: str = "") -> subprocess.CompletedProcess:
+        """guard run in cwd as a shell starts it there: PWD is cwd as written (bash keeps it, symlink and all)."""
+        self.write_config(mode)
+        dropped = ("AGENTS_PROJECT_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE")
+        env = {k: v for k, v in os.environ.items() if not k.startswith("WOUF_") and k not in dropped}
+        env.update(AGENTS_PROJECT_DIR=str(self.project), WOUF_TEAM_DIR=str(self.team), HOME=str(self.home),
+                   PWD=str(cwd))
+        return subprocess.run([sys.executable, "-I", str(GUARD), *args], input=stdin, capture_output=True, text=True,
+                              env=env, cwd=cwd)
+
+    def assert_gap_line(self, cmd: str, cwd: Path, names: tuple) -> None:
+        hook = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(cwd)})
+        for form, args, stdin in (("check-command", ("check-command", cmd), ""), ("hook", ("hook",), hook)):
+            with self.subTest(cmd=cmd, form=form):
+                result = self.run_in("on", cwd, *args, stdin=stdin)
+                if names:
+                    self.assert_lead_blocked(result, *names)
+                else:
+                    self.assert_allowed(result)
+                base, off = (self.run_in(mode, cwd, *args, stdin=stdin) for mode in ("base", "off"))
+                self.assertEqual((off.returncode, off.stderr), (base.returncode, base.stderr))
+
+    def bash_writes(self, cmd: str, cwd: Path, where: str) -> bool:
+        """Whether bash, run on cmd in cwd (PWD as written), writes where (below the temp folder)."""
+        env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(self.home), "PWD": str(cwd)}
+        subprocess.run(["bash", "-c", cmd], cwd=cwd, capture_output=True, stdin=subprocess.DEVNULL, env=env,
+                       timeout=20)
+        return (self.root / where).is_file()
+
+    def bash_hook(self, cmd: str, cwd: Path | None) -> str:
+        """A Bash hook payload for cmd whose cwd is cwd (None: the payload has no cwd)."""
+        return json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, **({"cwd": str(cwd)} if cwd else {})})
+
+    def test_hook_takes_a_pwd_that_names_its_cwd(self) -> None:
+        """Review T-0202.r4, finding 3: bash and the guard run in the project with PWD = A/alias. The hook takes that
+        PWD as the session's folder as given where it names the payload's cwd (or the guard's own folder when the
+        payload has none), as guard check-command does, so the gap 1 line refuses in every form."""
+        cmd, alias = GAP_LINES["1_session_link_dot_dot"][0], self.root / "A" / "alias"
+        forms = {"check-command": (("check-command", cmd), ""), "hook": (("hook",), self.bash_hook(cmd, self.project)),
+                 "hook_without_cwd": (("hook",), self.bash_hook(cmd, None))}
+        for form, (args, stdin) in forms.items():
+            with self.subTest(form=form):
+                self.assert_lead_blocked(self.run_in("on", alias, *args, stdin=stdin), CANNOT_TELL, SESSION_LINK)
+        self.assertTrue(self.bash_writes(cmd, alias, GAP_BASH_WRITES["1_session_link_dot_dot"]))
+
+    def test_hook_ignores_a_pwd_that_names_another_folder(self) -> None:
+        """A PWD that names another folder than the payload's cwd is ignored (the payload wins); a payload cwd
+        through the symlink still refuses the gap 1 line when PWD names the project as it resolves."""
+        notes, alias = self.project / "docs" / "notes", self.root / "A" / "alias"
+        stdin = self.bash_hook("cd ../notes && echo x > y.md", notes)
+        self.assert_allowed(self.run_in("on", alias, "hook", stdin=stdin))
+        cmd = GAP_LINES["1_session_link_dot_dot"][0]
+        result = self.run_in("on", self.project, "hook", stdin=self.bash_hook(cmd, alias))
+        self.assert_lead_blocked(result, CANNOT_TELL, SESSION_LINK)
+
+
+def _gap_tests() -> None:
+    for name, (cmd, folder, names) in GAP_LINES.items():
+        def test(self: KnownGapsTest, cmd: str = cmd, folder: str = folder, names: tuple = names,
+                 name: str = name) -> None:
+            cmd, cwd = cmd.format(project=self.project), self.root / folder
+            self.assert_gap_line(cmd, cwd, names)
+            if name in GAP_BASH_WRITES:
+                self.assertTrue(self.bash_writes(cmd, cwd, GAP_BASH_WRITES[name]), cmd)
+
+        setattr(KnownGapsTest, f"test_gap_{name}", test)
+
+
+_gap_tests()
+
+# Review T-0202.r4, findings 1 and 2: mkdir -p makes every folder of the path as written, those before a .. too, which
+# the guard does not record, so a mkdir (with or without -p) whose folder as written holds .. cannot tell. Each entry:
+# the line (run in the project; {project}: the project) and what bash makes (below the test's temp folder).
+MKDIR_DOT_DOT = "a .. in the folder as written"
+MKDIR_DOT_DOT_LINES = {
+    "1_code_before_the_dot_dot": ("mkdir -p docs/notes/d/e/.. && cp src/a.py docs/notes/d/e",
+                                  "project/docs/notes/d/e/a.py"),
+    "1_code_into_the_left_folder": ("mkdir -p docs/notes/d/../e && cp src/a.py docs/notes/d",
+                                    "project/docs/notes/d/a.py"),
+    "1_code_beside_the_end": ("mkdir -p docs/notes/d/e/../f && cp src/a.py docs/notes/d/e",
+                              "project/docs/notes/d/e/a.py"),
+    "1_brief_run_there": ("mkdir -p docs/notes/d/e/.. && cp team/briefs/T-1.md docs/notes/d/e && "
+                          "cd ./docs/notes/d/e && PKG_MAIN=T-1.md bash {project}/ops/run.sh",
+                          "project/docs/notes/d/e/T-1.md"),
+    "1_note_moved_run_there": ("mkdir -p docs/notes/d/e/../../g && mv docs/notes/x.md docs/notes/d/e && "
+                               "cd ./docs/notes/d/e && PKG_MAIN=x.md bash {project}/ops/run.sh",
+                               "project/docs/notes/d/e/x.md"),
+    "2_export_then_mkdir": ("cd ./docs/notes && export PKG_MAIN=evil && mkdir -p evil/../other && "
+                            "bash ../../ops/run.sh", "project/docs/notes/evil"),
+    "2_export_then_dot_mkdir": ("cd ./docs/notes && export PKG_MAIN=evil && mkdir -p ./evil/.. && "
+                                "bash ../../ops/run.sh", "project/docs/notes/evil"),
+    "2_mkdir_then_value": ("cd ./docs/notes && mkdir -p evil/../other && PKG_MAIN=evil bash ../../ops/run.sh",
+                           "project/docs/notes/evil"),
+    "without_p": ("mkdir docs/notes/../notes/new", "project/docs/notes/new"),
+}
+# The comparison lines of the review keep their result (no names: allowed).
+MKDIR_PLAIN_LINES = {
+    "mkdir -p docs/notes/d/e/f && cp src/a.py docs/notes/d/e": ("docs/notes/d/e/a.py", "is code"),
+    "cd ./docs/notes && export PKG_MAIN=evil && mkdir -p evil/sub && bash ../../ops/run.sh":
+        (CANNOT_TELL, "PKG_MAIN=evil: the line writes evil"),
+    "mkdir -p ./docs/notes/new": (),
+}
+
+
+def _mkdir_dot_dot_tests() -> None:
+    for name, (cmd, made) in MKDIR_DOT_DOT_LINES.items():
+        def test(self: KnownGapsTest, cmd: str = cmd, made: str = made) -> None:
+            cmd = cmd.format(project=self.project)
+            self.assert_gap_line(cmd, self.project, (CANNOT_TELL, MKDIR_DOT_DOT))
+            self.assertTrue(self.bash_writes(cmd, self.project, made) or (self.root / made).is_dir(), cmd)
+
+        setattr(KnownGapsTest, f"test_mkdir_dot_dot_{name}", test)
+
+    def plain(self: KnownGapsTest) -> None:
+        for cmd, names in MKDIR_PLAIN_LINES.items():
+            self.assert_gap_line(cmd, self.project, names)
+
+    setattr(KnownGapsTest, "test_mkdir_without_dot_dot_keeps_its_result", plain)
+
+
+_mkdir_dot_dot_tests()
+
 
 if __name__ == "__main__":
     unittest.main()

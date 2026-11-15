@@ -29,7 +29,9 @@ The brief (--brief FILE) may also have:
                         ([gate] main, default main; a base commit on that branch counts) K < N is red: land the series
                         on a feature branch, then one complete change. N/N is red there without the migration
                         .agents/upgrade/<VERSION>.md and an upgrade test tests/test_upgrade_*.py in the diff, which
-                        the gate runs itself on the head. A malformed or second Series line is red.
+                        the gate runs itself on the head: one of its tests must pass, and its name must be a module
+                        name, tests/test_upgrade_NAME.py with NAME letters, digits and _. K and N have one to three
+                        digits (001/002 is 1/2). A malformed or second Series line is red.
   Migration: none REASON  for N/N with VERSION unchanged: no migration file is needed; the reason is required."""
 
 

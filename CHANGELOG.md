@@ -4,6 +4,41 @@ All notable changes to WOUF are recorded in this file. The format follows Keep a
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-15
+
+The third release; it follows 0.2.0 and has no upgrade step (`.agents/upgrade/0.2.1.md`). `.agents/team/config.ini` is kept as it is, and the upgrade never touches bot storages or logins. Two things change without a config edit: the lead's guard refuses more crafted lines and the series gate has three fixes (see Fixed). There is nothing to set: no config key is new in this release.
+
+### Fixed
+
+- The lead's guard closes the four crafted bypasses that review T-0188.r23 recorded for 0.2.0,
+  where bash did not end up in the folder the guard checked a later write against (`docs/DESIGN.md`,
+  section 10). A `cd` with any redirection (`<`, `>`, `>>`,
+  `2>`, `&>`, a here-string, a heredoc) adds its folder instead of narrowing the
+  folder list, since bash does not run a builtin whose redirection fails. A `cd` narrows only when
+  every folder on the way exists (not missing, not a file, each checked before the `..` after it) and
+  its folder as written, normalised, is where it resolves; otherwise it adds its folder. A `cd` whose
+  folder as written holds `..` and passes a symlink, and any `cd` after a `cd` of
+  the line that passed a symlink, refuse the line with "cannot tell where this writes" (bash follows a
+  folder symlink by its name, the guard to its target). A lead_env value that names a path the line writes before it
+  (`cd ./docs/notes && echo data > evil && PKG_MAIN=evil bash ../../ops/run.sh`) refuses
+  the line the same way. An unquoted glob the guard cannot take, such as `grep -rn a --include=*.py src`, is
+  still refused, now with the hint "quote the glob".
+- The lead's guard closes the five crafted gaps that review T-0196.r4 recorded, where it checked another path than the
+  one bash writes (`docs/DESIGN.md`, section 10). When the session's folder (the hook's `cwd`, or `PWD` for
+  `guard check-command`) is reached through a symlink, a `cd` whose folder holds `..` refuses the line with "cannot tell
+  where this writes". A lead_env value that names a path the line writes anywhere in it, also after the value
+  (`cd ./docs/notes && export PKG_MAIN=evil && echo data > evil && bash ../../ops/run.sh`), refuses the line the same
+  way, and the names are compared with case ignored (`echo data > Evil && PKG_MAIN=evil ...`). A `cp` or `mv` into a
+  folder an earlier `mkdir` of the line makes is checked as `DEST/<basename of SRC>`, the path bash writes, so
+  `mkdir docs/notes/d && cp src/a.py docs/notes/d` is refused as code.
+  A `mkdir` whose folder holds `..` (`mkdir -p docs/notes/d/e/.. && cp src/a.py docs/notes/d/e`) refuses the line
+  with "cannot tell where this writes".
+- The completeness gate of a change in packages closes the known gaps of 0.2.0 (reviews T-0189.r1 and r2): an upgrade test is green only when at least one of its tests passed (a skip, an expected failure or an unexpected success is no pass); every `tests/test_upgrade_*.py` of the diff whose name is a module name runs, `tests/test_upgrade_.py` too, and one that `python3 -m unittest` cannot import (a dash or a dot, such as `tests/test_upgrade_0-3-0.py`) is red with a hint that names the form `tests/test_upgrade_NAME.py`; K and N of `Series: NAME K/N` may have one to three digits (`001/002` is 1/2), still 1 <= K <= N <= 20.
+
+### Changed
+
+- wouf.dev's home page names the change receipts (a sixth strength and one limit).
+
 ## [0.2.0] - 2026-11-12
 
 The second release; it follows 0.1.0 and has no upgrade step (`.agents/upgrade/0.2.0.md`). `.agents/team/config.ini` is kept as it is, and the upgrade never touches bot storages or logins. Three things change without a config edit: task classification (`team goal` and `project brief` take their class from `teamlib.classify`; see Fixed), the tier label `mid->strong` (see Changed) and the lead's guard (see Fixed). The keys new here are optional and do nothing until you set them: `[runner.*] usage`, `[runner.*] login_paths`, `[class.<name>]` sections, `[egress] private`, `[classify] security_words` and `[classify] keywords.<name>`.

@@ -44,4 +44,4 @@ The safety part of this guide explains the sandbox modes and their trade-offs, a
 
 ## Status
 
-This guide describes the repository as it is on `main`. Version 0.2.0, dated 2026-11-12, is the latest release. See the changelog for what it contains.
+This guide describes the repository as it is on `main`. Version 0.2.1, dated 2026-11-15, is the latest release. See the changelog for what it contains.
